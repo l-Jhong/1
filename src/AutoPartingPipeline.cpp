@@ -32,6 +32,9 @@ constexpr double kUndercutWarningRatio = 0.2;
 constexpr double kInvalidScore = -std::numeric_limits<double>::infinity();
 constexpr double kClosureTolerance = 1e-6;
 constexpr double kInternalCavityMarginRatio = 0.08;
+constexpr double kStrategyObstaclePenalty = 0.2;
+constexpr double kStrategyCorePenalty = 0.1;
+constexpr double kStrategyCorePreferencePenalty = 0.05;
 
 double degreesToRadians(double degrees) {
     return degrees * kPi / 180.0;
@@ -292,7 +295,10 @@ ContourFace identifyMaxContour(const PartingLine& line, const Vector3& direction
         contour.boundary.push_back(liftFromPlane(point, basis));
     }
     if (!contour.boundary.empty()) {
-        contour.boundary.push_back(contour.boundary.front());
+        Vector3 closureDelta = contour.boundary.front() - contour.boundary.back();
+        if (length(closureDelta) > kClosureTolerance) {
+            contour.boundary.push_back(contour.boundary.front());
+        }
     }
     contour.area = polygonArea2D(hull);
     contour.centroid = centroid;
@@ -611,8 +617,9 @@ std::vector<StrategyOption> buildStrategyOptions(const SeparabilityReport& repor
     std::vector<StrategyOption> options;
     StrategyOption baseline;
     baseline.name = "DefaultMultiParting";
-    baseline.score = report.score - static_cast<double>(report.obstacles.size()) * 0.2 -
-                     static_cast<double>(coreCount) * 0.1;
+    baseline.score = report.score -
+                     static_cast<double>(report.obstacles.size()) * kStrategyObstaclePenalty -
+                     static_cast<double>(coreCount) * kStrategyCorePenalty;
     for (const auto& obstacle : report.obstacles) {
         baseline.resolved.push_back(obstacle.type);
     }
@@ -620,7 +627,7 @@ std::vector<StrategyOption> buildStrategyOptions(const SeparabilityReport& repor
 
     StrategyOption conservative = baseline;
     conservative.name = "CorePreferred";
-    conservative.score -= static_cast<double>(coreCount) * 0.05;
+    conservative.score -= static_cast<double>(coreCount) * kStrategyCorePreferencePenalty;
     options.push_back(conservative);
     return options;
 }

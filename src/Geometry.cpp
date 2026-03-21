@@ -139,17 +139,24 @@ std::vector<Vector2> computeConvexHull2D(const std::vector<Vector2>& points) {
     if (points.size() < 3) {
         return points;
     }
+    constexpr double kHullEpsilon = 1e-9;
+    auto almostEqual = [kHullEpsilon](double left, double right) {
+        return std::abs(left - right) < kHullEpsilon;
+    };
     std::vector<Vector2> sorted = points;
     std::sort(sorted.begin(), sorted.end(),
-              [](const Vector2& left, const Vector2& right) {
-                  if (left.x == right.x) {
+              [&almostEqual](const Vector2& left, const Vector2& right) {
+                  if (!almostEqual(left.x, right.x)) {
+                      return left.x < right.x;
+                  }
+                  if (!almostEqual(left.y, right.y)) {
                       return left.y < right.y;
                   }
-                  return left.x < right.x;
+                  return false;
               });
     sorted.erase(std::unique(sorted.begin(), sorted.end(),
-                             [](const Vector2& left, const Vector2& right) {
-                                 return left.x == right.x && left.y == right.y;
+                             [&almostEqual](const Vector2& left, const Vector2& right) {
+                                 return almostEqual(left.x, right.x) && almostEqual(left.y, right.y);
                              }),
                  sorted.end());
     if (sorted.size() < 3) {

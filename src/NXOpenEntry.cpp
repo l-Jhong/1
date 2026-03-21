@@ -143,7 +143,7 @@ void MyClass::highlightPartingSurface(const std::vector<casting::Vector3>& bound
     if (!workPart || boundary.size() < 2) {
         return;
     }
-    for (std::size_t i = 0; i + 1 < boundary.size(); ++i) {
+    for (std::size_t i = 0; i < boundary.size() - 1; ++i) {
         const auto& start = boundary[i];
         const auto& end = boundary[i + 1];
         NXOpen::Point3d p0(start.x, start.y, start.z);
