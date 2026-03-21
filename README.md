@@ -1,6 +1,6 @@
 # Casting Auto Parting (NX 12.0 C++)
 
-本项目为 NX12.0 + VS2022 的铸造 CAD/CAE 自动分型流程示例，包含：
+本项目为 NX 12.0 + VS2022 的铸造 CAD/CAE 自动分型流程示例，包含：
 
 1. 模型预处理：修复网格、补洞、清理破面、统一法向
 2. 最优脱模方向计算：基于可见性、脱模角、倒扣数量进行优化
@@ -24,14 +24,14 @@ cmake --build build
 
 `src/NXOpenEntry.cpp` 内置了 NXOpen C++ 二次开发模板入口（`ufusr`），并在 `do_it()` 中调用自动分型流程示例。
 
-如需在 NX 环境中编译（生成 NX12.0 可用 DLL）：
+如需在 NX 环境中编译（生成 NX 12.0 可用 DLL）：
 
 ```bash
 cmake -S . -B build ^
   -DNXOPEN_ENABLED=ON ^
-  -DNXOPEN_ROOT_DIR="C:/Siemens/NX12.0" ^
-  -DNXOPEN_INCLUDE_DIR="C:/Siemens/NX12.0/UGOPEN" ^
-  -DNXOPEN_LIB_DIR="C:/Siemens/NX12.0/UGOPEN"
+  -DNXOPEN_ROOT_DIR="C:/Siemens/NX 12.0" ^
+  -DNXOPEN_INCLUDE_DIR="C:/Siemens/NX 12.0/UGOPEN" ^
+  -DNXOPEN_LIB_DIR="C:/Siemens/NX 12.0/UGOPEN"
 cmake --build build --config Release
 ```
 
