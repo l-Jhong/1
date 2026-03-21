@@ -24,11 +24,21 @@ cmake --build build
 
 `src/NXOpenEntry.cpp` 内置了 NXOpen C++ 二次开发模板入口（`ufusr`），并在 `do_it()` 中调用自动分型流程示例。
 
-如需在 NX 环境中编译：
+如需在 NX 环境中编译（生成 NX12.0 可用 DLL）：
 
 ```bash
-cmake -S . -B build -DNXOPEN_ENABLED=ON -DNXOPEN_INCLUDE_DIR="C:/Siemens/NX12.0/UGOPEN"
-cmake --build build
+cmake -S . -B build ^
+  -DNXOPEN_ENABLED=ON ^
+  -DNXOPEN_ROOT_DIR="C:/Siemens/NX12.0" ^
+  -DNXOPEN_INCLUDE_DIR="C:/Siemens/NX12.0/UGOPEN" ^
+  -DNXOPEN_LIB_DIR="C:/Siemens/NX12.0/UGOPEN"
+cmake --build build --config Release
 ```
 
-> 注意：请根据实际 NXOpen 安装路径设置 `NXOPEN_INCLUDE_DIR`。
+> 注意：请根据实际 NXOpen 安装路径设置 `NXOPEN_INCLUDE_DIR` / `NXOPEN_LIB_DIR`。
+
+生成的 DLL 默认输出到：
+
+```
+build/nxopen/casting_auto_parting_nxopen.dll
+```
