@@ -30,6 +30,7 @@ constexpr double kReferenceAxisAlignmentThreshold = 0.9;
 constexpr double kOverlapTolerance = 1e-6;
 constexpr double kUndercutWarningRatio = 0.2;
 constexpr double kInvalidScore = -std::numeric_limits<double>::infinity();
+constexpr double kClosureTolerance = 1e-6;
 
 double degreesToRadians(double degrees) {
     return degrees * kPi / 180.0;
@@ -197,9 +198,8 @@ PartingSurface buildPartingSurface(const PartingLine& line, double smoothingFact
         smoothed[i] = curr * (1.0 - smoothingFactor) + average * smoothingFactor;
     }
     surface.boundary.swap(smoothed);
-    if (surface.boundary.front().x != surface.boundary.back().x ||
-        surface.boundary.front().y != surface.boundary.back().y ||
-        surface.boundary.front().z != surface.boundary.back().z) {
+    Vector3 closureDelta = surface.boundary.front() - surface.boundary.back();
+    if (length(closureDelta) > kClosureTolerance) {
         surface.boundary.push_back(surface.boundary.front());
     }
     return surface;
