@@ -26,6 +26,10 @@ struct EdgeKeyHasher {
 };
 
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kReferenceAxisAlignmentThreshold = 0.9;
+constexpr double kOverlapTolerance = 1e-6;
+constexpr double kUndercutWarningRatio = 0.2;
+constexpr double kInvalidScore = -std::numeric_limits<double>::infinity();
 
 double degreesToRadians(double degrees) {
     return degrees * kPi / 180.0;
@@ -78,7 +82,7 @@ DemoldEvaluation evaluateDemoldDirection(const Mesh& mesh, const Vector3& direct
         }
     }
     if (totalArea <= std::numeric_limits<double>::epsilon()) {
-        return {dir, -std::numeric_limits<double>::infinity(), 0.0, 0.0};
+        return {dir, kInvalidScore, 0.0, 0.0};
     }
     double visibilityRatio = visibleArea / totalArea;
     double undercutRatio = undercutArea / totalArea;
@@ -103,7 +107,7 @@ DemoldEvaluation selectBestDemoldDirection(const Mesh& mesh, const AutoPartingSe
     if (length(averageNormal) > std::numeric_limits<double>::epsilon()) {
         candidates.push_back(normalized(averageNormal));
     }
-    DemoldEvaluation best{candidates.front(), -std::numeric_limits<double>::infinity(), 0.0, 0.0};
+    DemoldEvaluation best{candidates.front(), kInvalidScore, 0.0, 0.0};
     for (const auto& candidate : candidates) {
         DemoldEvaluation eval =
             evaluateDemoldDirection(mesh, candidate, settings.draftAngleDegrees,
@@ -156,7 +160,9 @@ PartingLine extractPartingLine(const Mesh& mesh, const Vector3& direction) {
     }
     centroid = centroid / static_cast<double>(line.points.size());
     Vector3 normal = normalized(direction);
-    Vector3 reference = (std::abs(normal.x) < 0.9) ? Vector3{1.0, 0.0, 0.0} : Vector3{0.0, 1.0, 0.0};
+    Vector3 reference = (std::abs(normal.x) < kReferenceAxisAlignmentThreshold)
+                            ? Vector3{1.0, 0.0, 0.0}
+                            : Vector3{0.0, 1.0, 0.0};
     Vector3 axisU = normalized(cross(normal, reference));
     if (length(axisU) <= std::numeric_limits<double>::epsilon()) {
         axisU = {1.0, 0.0, 0.0};
@@ -305,18 +311,17 @@ std::vector<InterferenceIssue> checkInterference(const Mesh& mesh, const SplitRe
     }
     Bounds upperBounds = computeBounds(split.upper);
     Bounds lowerBounds = computeBounds(split.lower);
-    const double tolerance = 1e-6;
     double overlapX = std::min(upperBounds.max.x, lowerBounds.max.x) -
                       std::max(upperBounds.min.x, lowerBounds.min.x);
     double overlapY = std::min(upperBounds.max.y, lowerBounds.max.y) -
                       std::max(upperBounds.min.y, lowerBounds.min.y);
     double overlapZ = std::min(upperBounds.max.z, lowerBounds.max.z) -
                       std::max(upperBounds.min.z, lowerBounds.min.z);
-    if (overlapX > tolerance && overlapY > tolerance && overlapZ > tolerance) {
+    if (overlapX > kOverlapTolerance && overlapY > kOverlapTolerance && overlapZ > kOverlapTolerance) {
         issues.push_back({"Upper/lower mold bounds overlap. Verify split plane and parting surface.",
                           0.6});
     }
-    if (evaluation.undercutRatio > 0.2) {
+    if (evaluation.undercutRatio > kUndercutWarningRatio) {
         issues.push_back({"Undercut ratio exceeds threshold, consider alternative demold direction.",
                           std::min(1.0, evaluation.undercutRatio)});
     }

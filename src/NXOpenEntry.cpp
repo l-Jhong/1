@@ -64,7 +64,7 @@ casting::Mesh buildDemoMesh(double size) {
 }  // namespace
 
 //------------------------------------------------------------------------------
-// NXOpen c++ test class
+// NXOpen C++ integration class
 //------------------------------------------------------------------------------
 class MyClass {
     // class members
