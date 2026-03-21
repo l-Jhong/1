@@ -155,10 +155,19 @@ PartingLine extractPartingLine(const Mesh& mesh, const Vector3& direction) {
         centroid += point;
     }
     centroid = centroid / static_cast<double>(line.points.size());
+    Vector3 normal = normalized(direction);
+    Vector3 reference = (std::abs(normal.x) < 0.9) ? Vector3{1.0, 0.0, 0.0} : Vector3{0.0, 1.0, 0.0};
+    Vector3 axisU = normalized(cross(normal, reference));
+    if (length(axisU) <= std::numeric_limits<double>::epsilon()) {
+        axisU = {1.0, 0.0, 0.0};
+    }
+    Vector3 axisV = normalized(cross(normal, axisU));
     std::sort(line.points.begin(), line.points.end(),
-              [&centroid](const Vector3& left, const Vector3& right) {
-                  double leftAngle = std::atan2(left.y - centroid.y, left.x - centroid.x);
-                  double rightAngle = std::atan2(right.y - centroid.y, right.x - centroid.x);
+              [&centroid, &axisU, &axisV](const Vector3& left, const Vector3& right) {
+                  Vector3 leftOffset = left - centroid;
+                  Vector3 rightOffset = right - centroid;
+                  double leftAngle = std::atan2(dot(leftOffset, axisV), dot(leftOffset, axisU));
+                  double rightAngle = std::atan2(dot(rightOffset, axisV), dot(rightOffset, axisU));
                   return leftAngle < rightAngle;
               });
     return line;
@@ -296,9 +305,14 @@ std::vector<InterferenceIssue> checkInterference(const Mesh& mesh, const SplitRe
     }
     Bounds upperBounds = computeBounds(split.upper);
     Bounds lowerBounds = computeBounds(split.lower);
-    if (upperBounds.min.x <= lowerBounds.max.x && upperBounds.max.x >= lowerBounds.min.x &&
-        upperBounds.min.y <= lowerBounds.max.y && upperBounds.max.y >= lowerBounds.min.y &&
-        upperBounds.min.z <= lowerBounds.max.z && upperBounds.max.z >= lowerBounds.min.z) {
+    const double tolerance = 1e-6;
+    double overlapX = std::min(upperBounds.max.x, lowerBounds.max.x) -
+                      std::max(upperBounds.min.x, lowerBounds.min.x);
+    double overlapY = std::min(upperBounds.max.y, lowerBounds.max.y) -
+                      std::max(upperBounds.min.y, lowerBounds.min.y);
+    double overlapZ = std::min(upperBounds.max.z, lowerBounds.max.z) -
+                      std::max(upperBounds.min.z, lowerBounds.min.z);
+    if (overlapX > tolerance && overlapY > tolerance && overlapZ > tolerance) {
         issues.push_back({"Upper/lower mold bounds overlap. Verify split plane and parting surface.",
                           0.6});
     }
