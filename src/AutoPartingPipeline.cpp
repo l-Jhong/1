@@ -31,9 +31,54 @@ constexpr double kOverlapTolerance = 1e-6;
 constexpr double kUndercutWarningRatio = 0.2;
 constexpr double kInvalidScore = -std::numeric_limits<double>::infinity();
 constexpr double kClosureTolerance = 1e-6;
+constexpr double kInternalCavityMarginRatio = 0.08;
 
 double degreesToRadians(double degrees) {
     return degrees * kPi / 180.0;
+}
+
+struct PlaneBasis {
+    Vector3 origin;
+    Vector3 normal;
+    Vector3 axisU;
+    Vector3 axisV;
+};
+
+PlaneBasis buildPlaneBasis(const Vector3& origin, const Vector3& normal) {
+    PlaneBasis basis;
+    basis.origin = origin;
+    basis.normal = normalized(normal);
+    Vector3 reference = (std::abs(basis.normal.x) < kReferenceAxisAlignmentThreshold)
+                            ? Vector3{1.0, 0.0, 0.0}
+                            : Vector3{0.0, 1.0, 0.0};
+    basis.axisU = normalized(cross(basis.normal, reference));
+    if (length(basis.axisU) <= std::numeric_limits<double>::epsilon()) {
+        basis.axisU = {1.0, 0.0, 0.0};
+    }
+    basis.axisV = normalized(cross(basis.normal, basis.axisU));
+    return basis;
+}
+
+Vector2 projectToPlane(const Vector3& point, const PlaneBasis& basis) {
+    Vector3 offset = point - basis.origin;
+    return {dot(offset, basis.axisU), dot(offset, basis.axisV)};
+}
+
+Vector3 liftFromPlane(const Vector2& point, const PlaneBasis& basis) {
+    return basis.origin + basis.axisU * point.x + basis.axisV * point.y;
+}
+
+double polygonArea2D(const std::vector<Vector2>& polygon) {
+    if (polygon.size() < 3) {
+        return 0.0;
+    }
+    double area = 0.0;
+    for (std::size_t i = 0; i < polygon.size(); ++i) {
+        const Vector2& a = polygon[i];
+        const Vector2& b = polygon[(i + 1) % polygon.size()];
+        area += a.x * b.y - b.x * a.y;
+    }
+    return std::abs(area) * 0.5;
 }
 
 Mesh preprocessMesh(const Mesh& input, double minArea) {
@@ -205,6 +250,56 @@ PartingSurface buildPartingSurface(const PartingLine& line, double smoothingFact
     return surface;
 }
 
+std::vector<PartingSurfaceStage> buildPartingSurfaceStages(const PartingLine& line,
+                                                           double smoothingFactor) {
+    std::vector<PartingSurfaceStage> stages;
+    PartingSurfaceStage raw;
+    raw.name = "raw";
+    raw.boundary = line.points;
+    stages.push_back(raw);
+
+    PartingSurface smoothed = buildPartingSurface(line, smoothingFactor);
+    PartingSurfaceStage smoothStage;
+    smoothStage.name = "smoothed";
+    smoothStage.boundary = smoothed.boundary;
+    stages.push_back(smoothStage);
+
+    return stages;
+}
+
+ContourFace identifyMaxContour(const PartingLine& line, const Vector3& direction) {
+    ContourFace contour;
+    if (line.points.size() < 3) {
+        return contour;
+    }
+    Vector3 centroid{};
+    for (const auto& point : line.points) {
+        centroid += point;
+    }
+    centroid = centroid / static_cast<double>(line.points.size());
+    PlaneBasis basis = buildPlaneBasis(centroid, direction);
+    std::vector<Vector2> projected;
+    projected.reserve(line.points.size());
+    for (const auto& point : line.points) {
+        projected.push_back(projectToPlane(point, basis));
+    }
+    std::vector<Vector2> hull = computeConvexHull2D(projected);
+    if (hull.size() < 3) {
+        return contour;
+    }
+    contour.boundary.reserve(hull.size() + 1);
+    for (const auto& point : hull) {
+        contour.boundary.push_back(liftFromPlane(point, basis));
+    }
+    if (!contour.boundary.empty()) {
+        contour.boundary.push_back(contour.boundary.front());
+    }
+    contour.area = polygonArea2D(hull);
+    contour.centroid = centroid;
+    contour.normal = normalized(direction);
+    return contour;
+}
+
 SplitResult splitMesh(const Mesh& mesh, const Vector3& direction) {
     SplitResult split;
     split.upper.vertices = mesh.vertices;
@@ -302,6 +397,207 @@ std::vector<CoreRegion> detectCoreRegions(const Mesh& mesh, const Vector3& direc
     return regions;
 }
 
+DemoldEvaluation evaluateRegionDirection(const Mesh& mesh, const std::vector<std::size_t>& indices,
+                                         const Vector3& direction, double draftAngleDegrees) {
+    double totalArea = 0.0;
+    double visibleArea = 0.0;
+    double undercutArea = 0.0;
+    double draftThreshold = std::sin(degreesToRadians(draftAngleDegrees));
+    Vector3 dir = normalized(direction);
+    for (std::size_t index : indices) {
+        const auto& triangle = mesh.triangles.at(index);
+        double area = triangleArea(mesh, triangle);
+        totalArea += area;
+        Vector3 normal = triangleNormal(mesh, triangle);
+        double alignment = dot(normal, dir);
+        if (alignment > 0.0) {
+            visibleArea += area;
+        }
+        if (alignment < -draftThreshold) {
+            undercutArea += area;
+        }
+    }
+    if (totalArea <= std::numeric_limits<double>::epsilon()) {
+        return {dir, kInvalidScore, 0.0, 0.0};
+    }
+    double visibilityRatio = visibleArea / totalArea;
+    double undercutRatio = undercutArea / totalArea;
+    double score = visibilityRatio - undercutRatio;
+    return {dir, score, visibilityRatio, undercutRatio};
+}
+
+std::vector<Vector3> buildRegionCandidateDirections(const Vector3& demoldDirection,
+                                                    const Vector3& averageNormal) {
+    std::vector<Vector3> candidates = {
+        {1.0, 0.0, 0.0},
+        {-1.0, 0.0, 0.0},
+        {0.0, 1.0, 0.0},
+        {0.0, -1.0, 0.0},
+        {0.0, 0.0, 1.0},
+        {0.0, 0.0, -1.0}
+    };
+    if (length(averageNormal) > std::numeric_limits<double>::epsilon()) {
+        candidates.push_back(normalized(averageNormal));
+    }
+    Vector3 lateral = cross(demoldDirection, averageNormal);
+    if (length(lateral) > std::numeric_limits<double>::epsilon()) {
+        candidates.push_back(normalized(lateral));
+        candidates.push_back(normalized(lateral * -1.0));
+    }
+    return candidates;
+}
+
+double angleBetween(const Vector3& left, const Vector3& right) {
+    double denom = length(left) * length(right);
+    if (denom <= std::numeric_limits<double>::epsilon()) {
+        return 0.0;
+    }
+    double cosine = std::clamp(dot(left, right) / denom, -1.0, 1.0);
+    return std::acos(cosine) * 180.0 / kPi;
+}
+
+Bounds expandBounds(const Bounds& bounds, double clearance) {
+    Bounds expanded = bounds;
+    expanded.min.x -= clearance;
+    expanded.min.y -= clearance;
+    expanded.min.z -= clearance;
+    expanded.max.x += clearance;
+    expanded.max.y += clearance;
+    expanded.max.z += clearance;
+    return expanded;
+}
+
+SeparabilityReport evaluateSeparability(const Mesh& mesh, const DemoldEvaluation& demold,
+                                        const std::vector<CoreRegion>& undercuts,
+                                        const AutoPartingSettings& settings,
+                                        std::vector<CoreRegion>* coreRegionsOut) {
+    SeparabilityReport report;
+    report.score = demold.score;
+    report.separable = demold.undercutRatio <= settings.separabilityUndercutThreshold;
+    if (!coreRegionsOut) {
+        return report;
+    }
+    Bounds meshBounds = computeBounds(mesh);
+    Vector3 meshSize = meshBounds.max - meshBounds.min;
+    double internalMarginX = std::abs(meshSize.x) * kInternalCavityMarginRatio;
+    double internalMarginY = std::abs(meshSize.y) * kInternalCavityMarginRatio;
+    double internalMarginZ = std::abs(meshSize.z) * kInternalCavityMarginRatio;
+
+    for (const auto& region : undercuts) {
+        ObstacleRegion obstacle;
+        obstacle.triangleIndices = region.triangleIndices;
+        obstacle.bounds = region.bounds;
+
+        Vector3 averageNormal{};
+        for (std::size_t index : region.triangleIndices) {
+            averageNormal += triangleNormal(mesh, mesh.triangles.at(index));
+        }
+        if (length(averageNormal) <= std::numeric_limits<double>::epsilon()) {
+            averageNormal = demold.direction;
+        }
+        std::vector<Vector3> candidates =
+            buildRegionCandidateDirections(demold.direction, averageNormal);
+
+        bool foundSlide = false;
+        DemoldEvaluation bestSlide{};
+        double bestAngle = -1.0;
+        DemoldEvaluation bestFallback{};
+        double bestFallbackUndercut = std::numeric_limits<double>::max();
+        for (const auto& candidate : candidates) {
+            DemoldEvaluation eval = evaluateRegionDirection(mesh, region.triangleIndices, candidate,
+                                                            settings.draftAngleDegrees);
+            if (eval.undercutRatio < bestFallbackUndercut) {
+                bestFallbackUndercut = eval.undercutRatio;
+                bestFallback = eval;
+            }
+            if (eval.undercutRatio <= settings.separabilityUndercutThreshold) {
+                double angle = angleBetween(candidate, demold.direction);
+                if (angle > bestAngle) {
+                    bestAngle = angle;
+                    bestSlide = eval;
+                    foundSlide = true;
+                }
+            }
+        }
+
+        if (foundSlide) {
+            obstacle.type = ObstacleType::SlideCandidate;
+            obstacle.suggestedDirection = bestSlide.direction;
+            obstacle.visibilityRatio = bestSlide.visibilityRatio;
+            obstacle.undercutRatio = bestSlide.undercutRatio;
+        } else {
+            bool internal =
+                region.bounds.min.x > meshBounds.min.x + internalMarginX &&
+                region.bounds.min.y > meshBounds.min.y + internalMarginY &&
+                region.bounds.min.z > meshBounds.min.z + internalMarginZ &&
+                region.bounds.max.x < meshBounds.max.x - internalMarginX &&
+                region.bounds.max.y < meshBounds.max.y - internalMarginY &&
+                region.bounds.max.z < meshBounds.max.z - internalMarginZ;
+            if (internal) {
+                obstacle.type = ObstacleType::CoreCandidate;
+                obstacle.suggestedDirection = bestFallback.direction;
+                obstacle.visibilityRatio = bestFallback.visibilityRatio;
+                obstacle.undercutRatio = bestFallback.undercutRatio;
+                coreRegionsOut->push_back(region);
+            } else {
+                obstacle.type = ObstacleType::MultiDirection;
+                obstacle.suggestedDirection = bestFallback.direction;
+                obstacle.visibilityRatio = bestFallback.visibilityRatio;
+                obstacle.undercutRatio = bestFallback.undercutRatio;
+            }
+        }
+        report.obstacles.push_back(obstacle);
+    }
+    return report;
+}
+
+MoldAssembly buildMoldAssembly(const SplitResult& split, const Vector3& direction,
+                               double clearance) {
+    MoldAssembly assembly;
+    MoldBlock upper;
+    upper.role = "UpperMold";
+    upper.cavityBounds = computeBounds(split.upper);
+    upper.bounds = expandBounds(upper.cavityBounds, clearance);
+    upper.pullDirection = normalized(direction);
+
+    MoldBlock lower;
+    lower.role = "LowerMold";
+    lower.cavityBounds = computeBounds(split.lower);
+    lower.bounds = expandBounds(lower.cavityBounds, clearance);
+    lower.pullDirection = normalized(direction * -1.0);
+
+    assembly.blocks.push_back(upper);
+    assembly.blocks.push_back(lower);
+    assembly.overallBounds = expandBounds(computeBounds(split.upper), clearance);
+    Bounds lowerBounds = expandBounds(computeBounds(split.lower), clearance);
+    assembly.overallBounds.min.x = std::min(assembly.overallBounds.min.x, lowerBounds.min.x);
+    assembly.overallBounds.min.y = std::min(assembly.overallBounds.min.y, lowerBounds.min.y);
+    assembly.overallBounds.min.z = std::min(assembly.overallBounds.min.z, lowerBounds.min.z);
+    assembly.overallBounds.max.x = std::max(assembly.overallBounds.max.x, lowerBounds.max.x);
+    assembly.overallBounds.max.y = std::max(assembly.overallBounds.max.y, lowerBounds.max.y);
+    assembly.overallBounds.max.z = std::max(assembly.overallBounds.max.z, lowerBounds.max.z);
+    return assembly;
+}
+
+std::vector<StrategyOption> buildStrategyOptions(const SeparabilityReport& report,
+                                                 std::size_t coreCount) {
+    std::vector<StrategyOption> options;
+    StrategyOption baseline;
+    baseline.name = "DefaultMultiParting";
+    baseline.score = report.score - static_cast<double>(report.obstacles.size()) * 0.2 -
+                     static_cast<double>(coreCount) * 0.1;
+    for (const auto& obstacle : report.obstacles) {
+        baseline.resolved.push_back(obstacle.type);
+    }
+    options.push_back(baseline);
+
+    StrategyOption conservative = baseline;
+    conservative.name = "CorePreferred";
+    conservative.score -= static_cast<double>(coreCount) * 0.05;
+    options.push_back(conservative);
+    return options;
+}
+
 std::vector<InterferenceIssue> checkInterference(const Mesh& mesh, const SplitResult& split,
                                                  const PartingLine& line,
                                                  const DemoldEvaluation& evaluation) {
@@ -338,10 +634,23 @@ AutoPartingResult AutoPartingPipeline::run(const Mesh& input, const AutoPartingS
     result.cleanedMesh = preprocessMesh(input, settings.minTriangleArea);
     result.demold = selectBestDemoldDirection(result.cleanedMesh, settings);
     result.partingLine = extractPartingLine(result.cleanedMesh, result.demold.direction);
-    result.partingSurface = buildPartingSurface(result.partingLine, settings.smoothingFactor);
+    result.partingSurfaceStages = buildPartingSurfaceStages(result.partingLine,
+                                                            settings.smoothingFactor);
+    if (!result.partingSurfaceStages.empty()) {
+        result.partingSurface.boundary = result.partingSurfaceStages.back().boundary;
+    } else {
+        result.partingSurface = buildPartingSurface(result.partingLine, settings.smoothingFactor);
+    }
+    result.maxContour = identifyMaxContour(result.partingLine, result.demold.direction);
     result.split = splitMesh(result.cleanedMesh, result.demold.direction);
-    result.cores = detectCoreRegions(result.cleanedMesh, result.demold.direction,
-                                     settings.draftAngleDegrees);
+    std::vector<CoreRegion> undercutRegions = detectCoreRegions(result.cleanedMesh,
+                                                                result.demold.direction,
+                                                                settings.draftAngleDegrees);
+    result.separability = evaluateSeparability(result.cleanedMesh, result.demold, undercutRegions,
+                                               settings, &result.cores);
+    result.moldAssembly = buildMoldAssembly(result.split, result.demold.direction,
+                                            settings.moldClearance);
+    result.strategies = buildStrategyOptions(result.separability, result.cores.size());
     result.issues = checkInterference(result.cleanedMesh, result.split, result.partingLine,
                                       result.demold);
     return result;

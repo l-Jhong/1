@@ -29,6 +29,28 @@ Vector3& operator+=(Vector3& left, const Vector3& right) {
     return left;
 }
 
+Vector2 operator+(const Vector2& left, const Vector2& right) {
+    return {left.x + right.x, left.y + right.y};
+}
+
+Vector2 operator-(const Vector2& left, const Vector2& right) {
+    return {left.x - right.x, left.y - right.y};
+}
+
+Vector2 operator*(const Vector2& value, double scale) {
+    return {value.x * scale, value.y * scale};
+}
+
+Vector2 operator/(const Vector2& value, double scale) {
+    return {value.x / scale, value.y / scale};
+}
+
+Vector2& operator+=(Vector2& left, const Vector2& right) {
+    left.x += right.x;
+    left.y += right.y;
+    return left;
+}
+
 double dot(const Vector3& left, const Vector3& right) {
     return left.x * right.x + left.y * right.y + left.z * right.z;
 }
@@ -51,6 +73,10 @@ Vector3 normalized(const Vector3& value) {
         return {};
     }
     return value / len;
+}
+
+double cross(const Vector2& left, const Vector2& right) {
+    return left.x * right.y - left.y * right.x;
 }
 
 Vector3 triangleNormal(const Mesh& mesh, const Triangle& triangle) {
@@ -107,6 +133,55 @@ Vector3 computeCentroid(const Mesh& mesh) {
         sum += vertex;
     }
     return sum / static_cast<double>(mesh.vertices.size());
+}
+
+std::vector<Vector2> computeConvexHull2D(const std::vector<Vector2>& points) {
+    if (points.size() < 3) {
+        return points;
+    }
+    std::vector<Vector2> sorted = points;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const Vector2& left, const Vector2& right) {
+                  if (left.x == right.x) {
+                      return left.y < right.y;
+                  }
+                  return left.x < right.x;
+              });
+    sorted.erase(std::unique(sorted.begin(), sorted.end(),
+                             [](const Vector2& left, const Vector2& right) {
+                                 return left.x == right.x && left.y == right.y;
+                             }),
+                 sorted.end());
+    if (sorted.size() < 3) {
+        return sorted;
+    }
+    std::vector<Vector2> hull;
+    hull.reserve(sorted.size() * 2);
+    auto appendHull = [&hull](const Vector2& point) {
+        while (hull.size() >= 2) {
+            Vector2 a = hull[hull.size() - 2];
+            Vector2 b = hull[hull.size() - 1];
+            if (cross(b - a, point - b) > 0.0) {
+                break;
+            }
+            hull.pop_back();
+        }
+        hull.push_back(point);
+    };
+    for (const auto& point : sorted) {
+        appendHull(point);
+    }
+    std::size_t lowerSize = hull.size();
+    for (auto it = sorted.rbegin(); it != sorted.rend(); ++it) {
+        appendHull(*it);
+    }
+    if (hull.size() > 1) {
+        hull.pop_back();
+    }
+    if (hull.size() > lowerSize) {
+        hull.pop_back();
+    }
+    return hull;
 }
 
 }  // namespace casting

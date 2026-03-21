@@ -15,12 +15,14 @@
 #include <NXOpen/Assemblies_ComponentAssembly.hxx>
 #include <NXOpen/Body.hxx>
 #include <NXOpen/BodyCollection.hxx>
+#include <NXOpen/CurveCollection.hxx>
 #include <NXOpen/Face.hxx>
 #include <NXOpen/Line.hxx>
 #include <NXOpen/NXException.hxx>
 #include <NXOpen/NXObject.hxx>
 #include <NXOpen/Part.hxx>
 #include <NXOpen/PartCollection.hxx>
+#include <NXOpen/Point3d.hxx>
 #include <NXOpen/Session.hxx>
 
 // Std C++ Includes
@@ -79,6 +81,7 @@ public:
     void print(const NXString&);
     void print(const string&);
     void print(const char*);
+    void highlightPartingSurface(const std::vector<casting::Vector3>& boundary);
 
 private:
     BasePart* workPart;
@@ -136,6 +139,22 @@ void MyClass::print(const char* msg) {
     lw->WriteLine(msg);
 }
 
+void MyClass::highlightPartingSurface(const std::vector<casting::Vector3>& boundary) {
+    if (!workPart || boundary.size() < 2) {
+        return;
+    }
+    for (std::size_t i = 0; i + 1 < boundary.size(); ++i) {
+        const auto& start = boundary[i];
+        const auto& end = boundary[i + 1];
+        NXOpen::Point3d p0(start.x, start.y, start.z);
+        NXOpen::Point3d p1(end.x, end.y, end.z);
+        NXOpen::Line* line = workPart->Curves()->CreateLine(p0, p1);
+        if (line) {
+            line->SetColor(186);
+        }
+    }
+}
+
 //------------------------------------------------------------------------------
 // Do something
 //------------------------------------------------------------------------------
@@ -160,6 +179,15 @@ void MyClass::do_it() {
     stream << "Parting line points: " << result.partingLine.points.size()
            << " | Core regions: " << result.cores.size();
     print(stream.str());
+
+    stream.str("");
+    stream.clear();
+    stream << "Separability: " << (result.separability.separable ? "separable" : "not separable")
+           << " | Obstacles: " << result.separability.obstacles.size()
+           << " | Max contour area: " << result.maxContour.area;
+    print(stream.str());
+
+    highlightPartingSurface(result.partingSurface.boundary);
 }
 
 //------------------------------------------------------------------------------
