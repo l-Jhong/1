@@ -467,6 +467,33 @@ Bounds expandBounds(const Bounds& bounds, double clearance) {
     return expanded;
 }
 
+Bounds computeBoundsFromTriangles(const Mesh& mesh) {
+    Bounds bounds{};
+    if (mesh.triangles.empty()) {
+        return computeBounds(mesh);
+    }
+    Vector3 minPoint{std::numeric_limits<double>::max(),
+                     std::numeric_limits<double>::max(),
+                     std::numeric_limits<double>::max()};
+    Vector3 maxPoint{std::numeric_limits<double>::lowest(),
+                     std::numeric_limits<double>::lowest(),
+                     std::numeric_limits<double>::lowest()};
+    for (const auto& triangle : mesh.triangles) {
+        const Vector3& a = mesh.vertices.at(triangle.v0);
+        const Vector3& b = mesh.vertices.at(triangle.v1);
+        const Vector3& c = mesh.vertices.at(triangle.v2);
+        minPoint.x = std::min({minPoint.x, a.x, b.x, c.x});
+        minPoint.y = std::min({minPoint.y, a.y, b.y, c.y});
+        minPoint.z = std::min({minPoint.z, a.z, b.z, c.z});
+        maxPoint.x = std::max({maxPoint.x, a.x, b.x, c.x});
+        maxPoint.y = std::max({maxPoint.y, a.y, b.y, c.y});
+        maxPoint.z = std::max({maxPoint.z, a.z, b.z, c.z});
+    }
+    bounds.min = minPoint;
+    bounds.max = maxPoint;
+    return bounds;
+}
+
 SeparabilityReport evaluateSeparability(const Mesh& mesh, const DemoldEvaluation& demold,
                                         const std::vector<CoreRegion>& undercuts,
                                         const AutoPartingSettings& settings,
@@ -556,20 +583,20 @@ MoldAssembly buildMoldAssembly(const SplitResult& split, const Vector3& directio
     MoldAssembly assembly;
     MoldBlock upper;
     upper.role = "UpperMold";
-    upper.cavityBounds = computeBounds(split.upper);
+    upper.cavityBounds = computeBoundsFromTriangles(split.upper);
     upper.bounds = expandBounds(upper.cavityBounds, clearance);
     upper.pullDirection = normalized(direction);
 
     MoldBlock lower;
     lower.role = "LowerMold";
-    lower.cavityBounds = computeBounds(split.lower);
+    lower.cavityBounds = computeBoundsFromTriangles(split.lower);
     lower.bounds = expandBounds(lower.cavityBounds, clearance);
     lower.pullDirection = normalized(direction * -1.0);
 
     assembly.blocks.push_back(upper);
     assembly.blocks.push_back(lower);
-    assembly.overallBounds = expandBounds(computeBounds(split.upper), clearance);
-    Bounds lowerBounds = expandBounds(computeBounds(split.lower), clearance);
+    assembly.overallBounds = expandBounds(upper.cavityBounds, clearance);
+    Bounds lowerBounds = expandBounds(lower.cavityBounds, clearance);
     assembly.overallBounds.min.x = std::min(assembly.overallBounds.min.x, lowerBounds.min.x);
     assembly.overallBounds.min.y = std::min(assembly.overallBounds.min.y, lowerBounds.min.y);
     assembly.overallBounds.min.z = std::min(assembly.overallBounds.min.z, lowerBounds.min.z);
@@ -605,8 +632,8 @@ std::vector<InterferenceIssue> checkInterference(const Mesh& mesh, const SplitRe
     if (line.points.empty()) {
         issues.push_back({"Parting line extraction produced no boundary points.", 0.8});
     }
-    Bounds upperBounds = computeBounds(split.upper);
-    Bounds lowerBounds = computeBounds(split.lower);
+    Bounds upperBounds = computeBoundsFromTriangles(split.upper);
+    Bounds lowerBounds = computeBoundsFromTriangles(split.lower);
     double overlapX = std::min(upperBounds.max.x, lowerBounds.max.x) -
                       std::max(upperBounds.min.x, lowerBounds.min.x);
     double overlapY = std::min(upperBounds.max.y, lowerBounds.max.y) -
