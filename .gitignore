@@ -1,0 +1,31 @@
+# 编译输出目录（不纳入版本控制）
+bin/
+obj/
+build/
+*.dll
+*.lib
+*.exp
+*.pdb
+
+# Visual Studio
+.vs/
+*.user
+*.aps
+*.suo
+*.ncb
+*.sdf
+*.opensdf
+*.cachefile
+*.VC.db
+*.VC.VC.opendb
+ipch/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+Makefile
+
+# 调试相关
+*.ilk
