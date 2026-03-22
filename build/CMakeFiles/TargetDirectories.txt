@@ -1,0 +1,4 @@
+/home/runner/work/1/1/build/CMakeFiles/casting_auto_parting.dir
+/home/runner/work/1/1/build/CMakeFiles/casting_auto_parting_demo.dir
+/home/runner/work/1/1/build/CMakeFiles/edit_cache.dir
+/home/runner/work/1/1/build/CMakeFiles/rebuild_cache.dir
