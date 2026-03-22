@@ -1,2 +1,0 @@
-/usr/bin/ar qc libcasting_auto_parting.a CMakeFiles/casting_auto_parting.dir/src/AutoPartingPipeline.cpp.o CMakeFiles/casting_auto_parting.dir/src/Geometry.cpp.o
-/usr/bin/ranlib libcasting_auto_parting.a
