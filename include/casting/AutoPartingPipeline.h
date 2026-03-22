@@ -28,6 +28,7 @@ struct SplitResult {
 };
 
 struct CoreRegion {
+    std::size_t id{};
     std::vector<std::size_t> triangleIndices;
     Bounds bounds{};
     Vector3 pullDirection{};
@@ -46,6 +47,8 @@ struct ObstacleRegion {
     Vector3 suggestedDirection{};
     double visibilityRatio{};
     double undercutRatio{};
+    std::size_t coreId{};
+    bool corePreferred = false;
 };
 
 struct SeparabilityReport {
@@ -111,6 +114,10 @@ struct AutoPartingSettings {
     double shrinkageFactor = 0.012;
     double coreHeadLength = 25.0;
     double coreSeatClearance = 0.3;
+    bool preferPlanarSurface = true;
+    double nonPlanarDeviationRatio = 0.08;
+    std::size_t maxCoreCount = 1;
+    double minCoreVolumeRatio = 0.02;
 };
 
 struct AutoPartingResult {

@@ -97,6 +97,19 @@ std::vector<Vector2> closeLoop2D(const std::vector<Vector2>& points) {
     return closed;
 }
 
+std::vector<Vector3> closeLoopLocal(const std::vector<Vector3>& points) {
+    std::vector<Vector3> closed = points;
+    if (closed.size() < 2) {
+        return closed;
+    }
+    Vector2 first{closed.front().x, closed.front().y};
+    Vector2 last{closed.back().x, closed.back().y};
+    if (distance2D(first, last) > kClosureTolerance) {
+        closed.push_back(closed.front());
+    }
+    return closed;
+}
+
 std::vector<Vector2> smoothClosedCurve2D(const std::vector<Vector2>& points, double smoothingFactor) {
     if (points.size() < 3) {
         return points;
@@ -109,6 +122,24 @@ std::vector<Vector2> smoothClosedCurve2D(const std::vector<Vector2>& points, dou
         const Vector2& next = points[(i + 1) % count];
         Vector2 average{(prev.x + curr.x + next.x) / 3.0,
                         (prev.y + curr.y + next.y) / 3.0};
+        smoothed[i] = curr * (1.0 - smoothingFactor) + average * smoothingFactor;
+    }
+    return smoothed;
+}
+
+std::vector<Vector3> smoothClosedCurve3D(const std::vector<Vector3>& points, double smoothingFactor) {
+    if (points.size() < 3) {
+        return points;
+    }
+    std::vector<Vector3> smoothed(points.size());
+    std::size_t count = points.size();
+    for (std::size_t i = 0; i < count; ++i) {
+        const Vector3& prev = points[(i + count - 1) % count];
+        const Vector3& curr = points[i];
+        const Vector3& next = points[(i + 1) % count];
+        Vector3 average{(prev.x + curr.x + next.x) / 3.0,
+                        (prev.y + curr.y + next.y) / 3.0,
+                        (prev.z + curr.z + next.z) / 3.0};
         smoothed[i] = curr * (1.0 - smoothingFactor) + average * smoothingFactor;
     }
     return smoothed;
@@ -137,6 +168,30 @@ std::vector<Vector2> extendCurve2D(const std::vector<Vector2>& points, double ex
     return extended;
 }
 
+std::vector<Vector3> extendLocalCurve(const std::vector<Vector3>& points, double extension) {
+    if (points.size() < 3 || extension <= 0.0) {
+        return points;
+    }
+    Vector2 centroid{};
+    for (const auto& point : points) {
+        centroid += Vector2{point.x, point.y};
+    }
+    centroid = centroid / static_cast<double>(points.size());
+    std::vector<Vector3> extended(points.size());
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        Vector2 offset{points[i].x - centroid.x, points[i].y - centroid.y};
+        double length = std::sqrt(offset.x * offset.x + offset.y * offset.y);
+        if (length <= std::numeric_limits<double>::epsilon()) {
+            extended[i] = points[i];
+            continue;
+        }
+        Vector2 direction{offset.x / length, offset.y / length};
+        extended[i] = {points[i].x + direction.x * extension,
+                       points[i].y + direction.y * extension,
+                       points[i].z};
+    }
+    return extended;
+}
 double orientation2D(const Vector2& a, const Vector2& b, const Vector2& c) {
     return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
@@ -446,6 +501,7 @@ PartingLine extractPartingLine(const Mesh& mesh, const Vector3& direction) {
 
 PartingSurface buildPartingSurface(const PartingLine& line, const Vector3& direction,
                                    double smoothingFactor, double extension,
+                                   bool preferPlanarSurface, double nonPlanarDeviationRatio,
                                    std::vector<PartingSurfaceStage>* stages) {
     PartingSurface surface;
     if (line.points.size() < 3) {
@@ -467,8 +523,24 @@ PartingSurface buildPartingSurface(const PartingLine& line, const Vector3& direc
     // 2) 将分型线投影到基准平面，得到二维投影曲线
     std::vector<Vector2> projected;
     projected.reserve(line.points.size());
+    std::vector<Vector3> localPoints;
+    localPoints.reserve(line.points.size());
+    double minW = std::numeric_limits<double>::max();
+    double maxW = std::numeric_limits<double>::lowest();
+    double minU = std::numeric_limits<double>::max();
+    double maxU = std::numeric_limits<double>::lowest();
+    double minV = std::numeric_limits<double>::max();
+    double maxV = std::numeric_limits<double>::lowest();
     for (const auto& point : line.points) {
-        projected.push_back(projectToPlane(point, basis));
+        Vector3 local = projectToBasis(point, basis);
+        projected.push_back({local.x, local.y});
+        localPoints.push_back(local);
+        minW = std::min(minW, local.z);
+        maxW = std::max(maxW, local.z);
+        minU = std::min(minU, local.x);
+        maxU = std::max(maxU, local.x);
+        minV = std::min(minV, local.y);
+        maxV = std::max(maxV, local.y);
     }
     projected = closeLoop2D(projected);
     if (stages) {
@@ -479,6 +551,13 @@ PartingSurface buildPartingSurface(const PartingLine& line, const Vector3& direc
         }
         stages->push_back(projectedStage);
     }
+
+    double planeExtent = std::max(maxU - minU, maxV - minV);
+    double deviationRatio = planeExtent <= std::numeric_limits<double>::epsilon()
+                                ? 0.0
+                                : (maxW - minW) / planeExtent;
+    // 默认优先平面分型面，只有起伏超过阈值时才允许非平面
+    bool allowNonPlanar = !preferPlanarSurface || deviationRatio > nonPlanarDeviationRatio;
 
     // 3) 对投影曲线做平滑处理，去除高频噪声
     std::vector<Vector2> smoothed = smoothClosedCurve2D(projected, smoothingFactor);
@@ -520,7 +599,29 @@ PartingSurface buildPartingSurface(const PartingLine& line, const Vector3& direc
         stages->push_back(extendedStage);
     }
 
-    // 6) 将二维边界抬升回三维，作为分型面边界
+    // 6) 必要时保留非平面起伏，否则输出平面分型面
+    if (allowNonPlanar) {
+        std::vector<Vector3> localLoop = closeLoopLocal(localPoints);
+        std::vector<Vector3> smoothedLocal = smoothClosedCurve3D(localLoop, smoothingFactor);
+        std::vector<Vector3> extendedLocal = extendLocalCurve(smoothedLocal, extension);
+        extendedLocal = closeLoopLocal(extendedLocal);
+        if (stages) {
+            PartingSurfaceStage nonPlanarStage;
+            nonPlanarStage.name = "non_planar";
+            for (const auto& point : extendedLocal) {
+                nonPlanarStage.boundary.push_back(liftFromBasis(point, basis));
+            }
+            stages->push_back(nonPlanarStage);
+        }
+        surface.boundary.clear();
+        surface.boundary.reserve(extendedLocal.size());
+        for (const auto& point : extendedLocal) {
+            surface.boundary.push_back(liftFromBasis(point, basis));
+        }
+        return surface;
+    }
+
+    // 7) 将二维边界抬升回三维，作为平面分型面边界
     surface.boundary.clear();
     surface.boundary.reserve(extended.size());
     for (const auto& point : extended) {
@@ -532,9 +633,12 @@ PartingSurface buildPartingSurface(const PartingLine& line, const Vector3& direc
 std::vector<PartingSurfaceStage> buildPartingSurfaceStages(const PartingLine& line,
                                                            const Vector3& direction,
                                                            double smoothingFactor,
-                                                           double extension) {
+                                                           double extension,
+                                                           bool preferPlanarSurface,
+                                                           double nonPlanarDeviationRatio) {
     std::vector<PartingSurfaceStage> stages;
-    buildPartingSurface(line, direction, smoothingFactor, extension, &stages);
+    buildPartingSurface(line, direction, smoothingFactor, extension, preferPlanarSurface,
+                        nonPlanarDeviationRatio, &stages);
     return stages;
 }
 
@@ -707,6 +811,7 @@ std::vector<CoreRegion> detectCoreRegions(const Mesh& mesh, const Vector3& direc
             continue;
         }
         CoreRegion region;
+        region.id = regions.size();
         std::vector<std::size_t> stack{index};
         visited[index] = true;
         Bounds bounds{};
@@ -740,8 +845,60 @@ std::vector<CoreRegion> detectCoreRegions(const Mesh& mesh, const Vector3& direc
     return regions;
 }
 
+double boundsVolume(const Bounds& bounds) {
+    double dx = std::abs(bounds.max.x - bounds.min.x);
+    double dy = std::abs(bounds.max.y - bounds.min.y);
+    double dz = std::abs(bounds.max.z - bounds.min.z);
+    return dx * dy * dz;
+}
+
+std::vector<CoreRegion> filterCoreRegions(const std::vector<CoreRegion>& cores,
+                                          const Bounds& meshBounds,
+                                          const AutoPartingSettings& settings,
+                                          std::vector<std::size_t>* keptIds) {
+    std::vector<CoreRegion> filtered;
+    if (cores.empty()) {
+        return filtered;
+    }
+    double meshVolume = boundsVolume(meshBounds);
+    if (meshVolume <= std::numeric_limits<double>::epsilon()) {
+        return filtered;
+    }
+    struct CoreScore {
+        CoreRegion region;
+        double volume{};
+    };
+    std::vector<CoreScore> scored;
+    scored.reserve(cores.size());
+    for (const auto& core : cores) {
+        double volume = boundsVolume(core.bounds);
+        double ratio = volume / meshVolume;
+        if (ratio < settings.minCoreVolumeRatio) {
+            continue;
+        }
+        scored.push_back({core, volume});
+    }
+    std::sort(scored.begin(), scored.end(),
+              [](const CoreScore& left, const CoreScore& right) {
+                  return left.volume > right.volume;
+              });
+    std::size_t limit = settings.maxCoreCount == 0 ? scored.size()
+                                                   : std::min(settings.maxCoreCount, scored.size());
+    filtered.reserve(limit);
+    if (keptIds) {
+        keptIds->clear();
+    }
+    for (std::size_t i = 0; i < limit; ++i) {
+        filtered.push_back(scored[i].region);
+        if (keptIds) {
+            keptIds->push_back(scored[i].region.id);
+        }
+    }
+    return filtered;
+}
+
 DemoldEvaluation evaluateRegionDirection(const Mesh& mesh, const std::vector<std::size_t>& indices,
-                                         const Vector3& direction, double draftAngleDegrees) {
+                                          const Vector3& direction, double draftAngleDegrees) {
     double totalArea = 0.0;
     double visibleArea = 0.0;
     double undercutArea = 0.0;
@@ -911,6 +1068,8 @@ SeparabilityReport evaluateSeparability(const Mesh& mesh, const DemoldEvaluation
                 CoreRegion coreRegion = region;
                 coreRegion.pullDirection = bestFallback.direction;
                 coreRegionsOut->push_back(coreRegion);
+                obstacle.coreId = coreRegion.id;
+                obstacle.corePreferred = true;
             } else {
                 obstacle.type = ObstacleType::MultiDirection;
                 obstacle.suggestedDirection = bestFallback.direction;
@@ -1067,13 +1226,17 @@ AutoPartingResult AutoPartingPipeline::run(const Mesh& input, const AutoPartingS
     result.partingSurfaceStages = buildPartingSurfaceStages(result.partingLine,
                                                             result.demold.direction,
                                                             settings.smoothingFactor,
-                                                            settings.partingSurfaceExtension);
+                                                            settings.partingSurfaceExtension,
+                                                            settings.preferPlanarSurface,
+                                                            settings.nonPlanarDeviationRatio);
     if (!result.partingSurfaceStages.empty()) {
         result.partingSurface.boundary = result.partingSurfaceStages.back().boundary;
     } else {
         result.partingSurface = buildPartingSurface(result.partingLine, result.demold.direction,
                                                     settings.smoothingFactor,
-                                                    settings.partingSurfaceExtension, nullptr);
+                                                    settings.partingSurfaceExtension,
+                                                    settings.preferPlanarSurface,
+                                                    settings.nonPlanarDeviationRatio, nullptr);
     }
     result.maxContour = identifyMaxContour(result.partingLine, result.demold.direction);
     result.split = splitMesh(result.cleanedMesh, result.demold.direction);
@@ -1082,6 +1245,29 @@ AutoPartingResult AutoPartingPipeline::run(const Mesh& input, const AutoPartingS
                                                                 settings.draftAngleDegrees);
     result.separability = evaluateSeparability(result.cleanedMesh, result.demold, undercutRegions,
                                                settings, &result.cores);
+    Bounds meshBounds = computeBounds(result.cleanedMesh);
+    std::vector<std::size_t> keptCoreIds;
+    // 根据体积占比与数量限制筛减砂芯，尽量减少砂芯数量
+    result.cores = filterCoreRegions(result.cores, meshBounds, settings, &keptCoreIds);
+    if (!keptCoreIds.empty()) {
+        std::unordered_set<std::size_t> keptSet(keptCoreIds.begin(), keptCoreIds.end());
+        for (auto& obstacle : result.separability.obstacles) {
+            if (obstacle.type != ObstacleType::CoreCandidate || !obstacle.corePreferred) {
+                continue;
+            }
+            if (keptSet.count(obstacle.coreId) == 0) {
+                obstacle.type = ObstacleType::MultiDirection;
+                obstacle.corePreferred = false;
+            }
+        }
+    } else if (result.cores.empty()) {
+        for (auto& obstacle : result.separability.obstacles) {
+            if (obstacle.type == ObstacleType::CoreCandidate) {
+                obstacle.type = ObstacleType::MultiDirection;
+                obstacle.corePreferred = false;
+            }
+        }
+    }
     result.moldAssembly = buildMoldAssembly(result.cleanedMesh, result.partingSurface,
                                             result.demold.direction, settings, result.cores);
     result.strategies = buildStrategyOptions(result.separability, result.cores.size());

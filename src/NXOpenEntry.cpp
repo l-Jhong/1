@@ -4,6 +4,7 @@
 #include <uf.h>
 #include <uf_object_types.h>
 #include <uf_modl.h>
+#include <uf_obj.h>
 
 // Internal Includes
 #include <NXOpen/ListingWindow.hxx>
@@ -148,6 +149,7 @@ public:
     void print(const string&);
     void print(const char*);
     void highlightPartingSurface(const std::vector<casting::Vector3>& boundary);
+    void showMoldAssembly(const casting::MoldAssembly& assembly);
 
 private:
     BasePart* workPart;
@@ -221,6 +223,35 @@ void MyClass::highlightPartingSurface(const std::vector<casting::Vector3>& bound
     }
 }
 
+void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
+    if (!workPart) {
+        return;
+    }
+    auto createBlock = [](const casting::Bounds& bounds, int color) {
+        double edgeX = bounds.max.x - bounds.min.x;
+        double edgeY = bounds.max.y - bounds.min.y;
+        double edgeZ = bounds.max.z - bounds.min.z;
+        if (edgeX <= 0.0 || edgeY <= 0.0 || edgeZ <= 0.0) {
+            return;
+        }
+        double corner[3] = {bounds.min.x, bounds.min.y, bounds.min.z};
+        double edges[3] = {edgeX, edgeY, edgeZ};
+        tag_t blockTag = NULL_TAG;
+        if (UF_MODL_create_block1(corner, edges, &blockTag) == 0 && blockTag != NULL_TAG) {
+            UF_OBJ_set_color(blockTag, color);
+        }
+    };
+
+    // 使用不同颜色展示上、下模和砂芯（仅显示，不输出文件）
+    if (assembly.blocks.size() >= 2) {
+        createBlock(assembly.blocks[0].bounds, 186);
+        createBlock(assembly.blocks[1].bounds, 112);
+    }
+    for (const auto& core : assembly.cores) {
+        createBlock(core.bodyBounds, 10);
+        createBlock(core.headBounds, 25);
+    }
+}
 //------------------------------------------------------------------------------
 // Do something
 //------------------------------------------------------------------------------
@@ -255,6 +286,7 @@ void MyClass::do_it() {
     print(stream.str());
 
     highlightPartingSurface(result.partingSurface.boundary);
+    showMoldAssembly(result.moldAssembly);
 }
 
 //------------------------------------------------------------------------------
