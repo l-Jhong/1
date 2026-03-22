@@ -48,7 +48,9 @@ int main() {
     std::cout << "Mold blocks: " << result.moldAssembly.blocks.size() << "\n";
     std::cout << "Core inserts: " << result.moldAssembly.cores.size() << "\n";
     std::cout << "Interference issues: " << result.issues.size() << "\n";
-    std::cout << "Visualization colors: Upper=186, Lower=112, Core=10\n";
+    std::cout << "Visualization colors: Upper=" << casting::kUpperMoldColor
+              << ", Lower=" << casting::kLowerMoldColor
+              << ", Core=" << casting::kCoreColor << "\n";
 
     return 0;
 }

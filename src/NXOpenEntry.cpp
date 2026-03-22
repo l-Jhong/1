@@ -244,12 +244,12 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
 
     // 使用不同颜色展示上、下模和砂芯（仅显示，不输出文件）
     if (assembly.blocks.size() >= 2) {
-        createBlock(assembly.blocks[0].bounds, 186);
-        createBlock(assembly.blocks[1].bounds, 112);
+        createBlock(assembly.blocks[0].bounds, casting::kUpperMoldColor);
+        createBlock(assembly.blocks[1].bounds, casting::kLowerMoldColor);
     }
     for (const auto& core : assembly.cores) {
-        createBlock(core.bodyBounds, 10);
-        createBlock(core.headBounds, 25);
+        createBlock(core.bodyBounds, casting::kCoreColor);
+        createBlock(core.headBounds, casting::kCoreHeadColor);
     }
 }
 //------------------------------------------------------------------------------

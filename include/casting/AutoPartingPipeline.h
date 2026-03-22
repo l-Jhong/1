@@ -7,6 +7,11 @@
 
 namespace casting {
 
+constexpr int kUpperMoldColor = 186;
+constexpr int kLowerMoldColor = 112;
+constexpr int kCoreColor = 10;
+constexpr int kCoreHeadColor = 25;
+
 struct DemoldEvaluation {
     Vector3 direction{};
     double score{};
