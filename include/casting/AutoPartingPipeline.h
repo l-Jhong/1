@@ -30,6 +30,7 @@ struct SplitResult {
 struct CoreRegion {
     std::vector<std::size_t> triangleIndices;
     Bounds bounds{};
+    Vector3 pullDirection{};
 };
 
 enum class ObstacleType {
@@ -73,9 +74,17 @@ struct MoldBlock {
     bool subtractPart = true;
 };
 
+struct CoreInsert {
+    Bounds bodyBounds{};
+    Bounds headBounds{};
+    Bounds seatBounds{};
+    Vector3 pullDirection{};
+};
+
 struct MoldAssembly {
     Bounds overallBounds{};
     std::vector<MoldBlock> blocks;
+    std::vector<CoreInsert> cores;
 };
 
 struct StrategyOption {
@@ -96,7 +105,12 @@ struct AutoPartingSettings {
     double visibilityPenalty = 0.5;
     double smoothingFactor = 0.3;
     double separabilityUndercutThreshold = 0.08;
+    double partingSurfaceExtension = 80.0;
+    double moldBlankPadding = 80.0;
     double moldClearance = 2.0;
+    double shrinkageFactor = 0.012;
+    double coreHeadLength = 25.0;
+    double coreSeatClearance = 0.3;
 };
 
 struct AutoPartingResult {

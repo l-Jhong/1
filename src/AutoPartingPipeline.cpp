@@ -71,6 +71,222 @@ Vector3 liftFromPlane(const Vector2& point, const PlaneBasis& basis) {
     return basis.origin + basis.axisU * point.x + basis.axisV * point.y;
 }
 
+Vector3 projectToBasis(const Vector3& point, const PlaneBasis& basis) {
+    Vector3 offset = point - basis.origin;
+    return {dot(offset, basis.axisU), dot(offset, basis.axisV), dot(offset, basis.normal)};
+}
+
+Vector3 liftFromBasis(const Vector3& point, const PlaneBasis& basis) {
+    return basis.origin + basis.axisU * point.x + basis.axisV * point.y +
+           basis.normal * point.z;
+}
+
+double distance2D(const Vector2& left, const Vector2& right) {
+    Vector2 delta = left - right;
+    return std::sqrt(delta.x * delta.x + delta.y * delta.y);
+}
+
+std::vector<Vector2> closeLoop2D(const std::vector<Vector2>& points) {
+    std::vector<Vector2> closed = points;
+    if (closed.size() < 2) {
+        return closed;
+    }
+    if (distance2D(closed.front(), closed.back()) > kClosureTolerance) {
+        closed.push_back(closed.front());
+    }
+    return closed;
+}
+
+std::vector<Vector2> smoothClosedCurve2D(const std::vector<Vector2>& points, double smoothingFactor) {
+    if (points.size() < 3) {
+        return points;
+    }
+    std::vector<Vector2> smoothed(points.size());
+    std::size_t count = points.size();
+    for (std::size_t i = 0; i < count; ++i) {
+        const Vector2& prev = points[(i + count - 1) % count];
+        const Vector2& curr = points[i];
+        const Vector2& next = points[(i + 1) % count];
+        Vector2 average{(prev.x + curr.x + next.x) / 3.0,
+                        (prev.y + curr.y + next.y) / 3.0};
+        smoothed[i] = curr * (1.0 - smoothingFactor) + average * smoothingFactor;
+    }
+    return smoothed;
+}
+
+std::vector<Vector2> extendCurve2D(const std::vector<Vector2>& points, double extension) {
+    if (points.size() < 3 || extension <= 0.0) {
+        return points;
+    }
+    Vector2 centroid{};
+    for (const auto& point : points) {
+        centroid += point;
+    }
+    centroid = centroid / static_cast<double>(points.size());
+    std::vector<Vector2> extended(points.size());
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        Vector2 offset = points[i] - centroid;
+        double length = std::sqrt(offset.x * offset.x + offset.y * offset.y);
+        if (length <= std::numeric_limits<double>::epsilon()) {
+            extended[i] = points[i];
+            continue;
+        }
+        Vector2 direction{offset.x / length, offset.y / length};
+        extended[i] = points[i] + direction * extension;
+    }
+    return extended;
+}
+
+double orientation2D(const Vector2& a, const Vector2& b, const Vector2& c) {
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+bool onSegment2D(const Vector2& a, const Vector2& b, const Vector2& c) {
+    return std::min(a.x, b.x) - kClosureTolerance <= c.x &&
+           c.x <= std::max(a.x, b.x) + kClosureTolerance &&
+           std::min(a.y, b.y) - kClosureTolerance <= c.y &&
+           c.y <= std::max(a.y, b.y) + kClosureTolerance;
+}
+
+bool segmentsIntersect2D(const Vector2& p1, const Vector2& p2,
+                         const Vector2& q1, const Vector2& q2) {
+    double o1 = orientation2D(p1, p2, q1);
+    double o2 = orientation2D(p1, p2, q2);
+    double o3 = orientation2D(q1, q2, p1);
+    double o4 = orientation2D(q1, q2, p2);
+    if ((o1 * o2) < 0.0 && (o3 * o4) < 0.0) {
+        return true;
+    }
+    if (std::abs(o1) <= kClosureTolerance && onSegment2D(p1, p2, q1)) {
+        return true;
+    }
+    if (std::abs(o2) <= kClosureTolerance && onSegment2D(p1, p2, q2)) {
+        return true;
+    }
+    if (std::abs(o3) <= kClosureTolerance && onSegment2D(q1, q2, p1)) {
+        return true;
+    }
+    if (std::abs(o4) <= kClosureTolerance && onSegment2D(q1, q2, p2)) {
+        return true;
+    }
+    return false;
+}
+
+bool hasSelfIntersection2D(const std::vector<Vector2>& loop) {
+    if (loop.size() < 4) {
+        return false;
+    }
+    std::size_t count = loop.size() - 1;
+    for (std::size_t i = 0; i < count; ++i) {
+        Vector2 a1 = loop[i];
+        Vector2 a2 = loop[(i + 1) % count];
+        for (std::size_t j = i + 2; j < count; ++j) {
+            if (j + 1 == i || (i == 0 && j + 1 == count)) {
+                continue;
+            }
+            Vector2 b1 = loop[j];
+            Vector2 b2 = loop[(j + 1) % count];
+            if (segmentsIntersect2D(a1, a2, b1, b2)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+Bounds computeLocalBounds(const Mesh& mesh, const PlaneBasis& basis) {
+    Bounds bounds{};
+    bounds.min = {std::numeric_limits<double>::max(),
+                  std::numeric_limits<double>::max(),
+                  std::numeric_limits<double>::max()};
+    bounds.max = {std::numeric_limits<double>::lowest(),
+                  std::numeric_limits<double>::lowest(),
+                  std::numeric_limits<double>::lowest()};
+    for (const auto& vertex : mesh.vertices) {
+        Vector3 local = projectToBasis(vertex, basis);
+        bounds.min.x = std::min(bounds.min.x, local.x);
+        bounds.min.y = std::min(bounds.min.y, local.y);
+        bounds.min.z = std::min(bounds.min.z, local.z);
+        bounds.max.x = std::max(bounds.max.x, local.x);
+        bounds.max.y = std::max(bounds.max.y, local.y);
+        bounds.max.z = std::max(bounds.max.z, local.z);
+    }
+    return bounds;
+}
+
+Bounds expandLocalBounds(const Bounds& bounds, double padding) {
+    Bounds expanded = bounds;
+    expanded.min.x -= padding;
+    expanded.min.y -= padding;
+    expanded.min.z -= padding;
+    expanded.max.x += padding;
+    expanded.max.y += padding;
+    expanded.max.z += padding;
+    return expanded;
+}
+
+Bounds localBoundsToWorld(const Bounds& local, const PlaneBasis& basis) {
+    std::array<Vector3, 8> corners = {
+        liftFromBasis({local.min.x, local.min.y, local.min.z}, basis),
+        liftFromBasis({local.max.x, local.min.y, local.min.z}, basis),
+        liftFromBasis({local.max.x, local.max.y, local.min.z}, basis),
+        liftFromBasis({local.min.x, local.max.y, local.min.z}, basis),
+        liftFromBasis({local.min.x, local.min.y, local.max.z}, basis),
+        liftFromBasis({local.max.x, local.min.y, local.max.z}, basis),
+        liftFromBasis({local.max.x, local.max.y, local.max.z}, basis),
+        liftFromBasis({local.min.x, local.max.y, local.max.z}, basis)
+    };
+    Bounds bounds{};
+    bounds.min = {std::numeric_limits<double>::max(),
+                  std::numeric_limits<double>::max(),
+                  std::numeric_limits<double>::max()};
+    bounds.max = {std::numeric_limits<double>::lowest(),
+                  std::numeric_limits<double>::lowest(),
+                  std::numeric_limits<double>::lowest()};
+    for (const auto& corner : corners) {
+        bounds.min.x = std::min(bounds.min.x, corner.x);
+        bounds.min.y = std::min(bounds.min.y, corner.y);
+        bounds.min.z = std::min(bounds.min.z, corner.z);
+        bounds.max.x = std::max(bounds.max.x, corner.x);
+        bounds.max.y = std::max(bounds.max.y, corner.y);
+        bounds.max.z = std::max(bounds.max.z, corner.z);
+    }
+    return bounds;
+}
+
+Bounds scaleLocalBounds(const Bounds& bounds, const Vector3& center, double scale) {
+    Bounds scaled;
+    scaled.min = center + (bounds.min - center) * scale;
+    scaled.max = center + (bounds.max - center) * scale;
+    return scaled;
+}
+
+Bounds extendBoundsAlongDirection(const Bounds& bounds, const Vector3& direction, double length) {
+    Bounds extended = bounds;
+    Vector3 dir = normalized(direction);
+    if (dir.x >= 0.0) {
+        extended.max.x += length * std::abs(dir.x);
+    } else {
+        extended.min.x -= length * std::abs(dir.x);
+    }
+    if (dir.y >= 0.0) {
+        extended.max.y += length * std::abs(dir.y);
+    } else {
+        extended.min.y -= length * std::abs(dir.y);
+    }
+    if (dir.z >= 0.0) {
+        extended.max.z += length * std::abs(dir.z);
+    } else {
+        extended.min.z -= length * std::abs(dir.z);
+    }
+    return extended;
+}
+
+bool boundsContains(const Bounds& outer, const Bounds& inner) {
+    return inner.min.x >= outer.min.x && inner.min.y >= outer.min.y &&
+           inner.min.z >= outer.min.z && inner.max.x <= outer.max.x &&
+           inner.max.y <= outer.max.y && inner.max.z <= outer.max.z;
+}
 double polygonArea2D(const std::vector<Vector2>& polygon) {
     if (polygon.size() < 3) {
         return 0.0;
@@ -228,45 +444,97 @@ PartingLine extractPartingLine(const Mesh& mesh, const Vector3& direction) {
     return line;
 }
 
-PartingSurface buildPartingSurface(const PartingLine& line, double smoothingFactor) {
+PartingSurface buildPartingSurface(const PartingLine& line, const Vector3& direction,
+                                   double smoothingFactor, double extension,
+                                   std::vector<PartingSurfaceStage>* stages) {
     PartingSurface surface;
-    surface.boundary = line.points;
-    if (surface.boundary.size() < 3) {
+    if (line.points.size() < 3) {
         return surface;
     }
-    std::vector<Vector3> smoothed = surface.boundary;
-    const std::size_t count = surface.boundary.size();
-    for (std::size_t i = 0; i < count; ++i) {
-        const Vector3& prev = surface.boundary[(i + count - 1) % count];
-        const Vector3& curr = surface.boundary[i];
-        const Vector3& next = surface.boundary[(i + 1) % count];
-        Vector3 average{(prev.x + curr.x + next.x) / 3.0,
-                        (prev.y + curr.y + next.y) / 3.0,
-                        (prev.z + curr.z + next.z) / 3.0};
-        smoothed[i] = curr * (1.0 - smoothingFactor) + average * smoothingFactor;
+
+    // 1) 以分型线重心作为基准点，构建与脱模方向垂直的基准平面
+    Vector3 centroid{};
+    for (const auto& point : line.points) {
+        centroid += point;
     }
-    surface.boundary.swap(smoothed);
-    Vector3 closureDelta = surface.boundary.front() - surface.boundary.back();
-    if (length(closureDelta) > kClosureTolerance) {
-        surface.boundary.push_back(surface.boundary.front());
+    centroid = centroid / static_cast<double>(line.points.size());
+    PlaneBasis basis = buildPlaneBasis(centroid, direction);
+
+    if (stages) {
+        stages->push_back({"raw", line.points});
+    }
+
+    // 2) 将分型线投影到基准平面，得到二维投影曲线
+    std::vector<Vector2> projected;
+    projected.reserve(line.points.size());
+    for (const auto& point : line.points) {
+        projected.push_back(projectToPlane(point, basis));
+    }
+    projected = closeLoop2D(projected);
+    if (stages) {
+        PartingSurfaceStage projectedStage;
+        projectedStage.name = "projected";
+        for (const auto& point : projected) {
+            projectedStage.boundary.push_back(liftFromPlane(point, basis));
+        }
+        stages->push_back(projectedStage);
+    }
+
+    // 3) 对投影曲线做平滑处理，去除高频噪声
+    std::vector<Vector2> smoothed = smoothClosedCurve2D(projected, smoothingFactor);
+    if (stages) {
+        PartingSurfaceStage smoothedStage;
+        smoothedStage.name = "smoothed";
+        for (const auto& point : smoothed) {
+            smoothedStage.boundary.push_back(liftFromPlane(point, basis));
+        }
+        stages->push_back(smoothedStage);
+    }
+
+    // 4) 检查投影曲线是否存在自交，必要时以凸包进行自动修复
+    std::vector<Vector2> repaired = smoothed;
+    if (hasSelfIntersection2D(closeLoop2D(repaired))) {
+        std::vector<Vector2> hull = computeConvexHull2D(repaired);
+        if (hull.size() >= 3) {
+            repaired = closeLoop2D(hull);
+            if (stages) {
+                PartingSurfaceStage repairedStage;
+                repairedStage.name = "repaired";
+                for (const auto& point : repaired) {
+                    repairedStage.boundary.push_back(liftFromPlane(point, basis));
+                }
+                stages->push_back(repairedStage);
+            }
+        }
+    }
+
+    // 5) 沿法向的垂直平面内向外延伸，保证分型面覆盖范围
+    std::vector<Vector2> extended = extendCurve2D(repaired, extension);
+    extended = closeLoop2D(extended);
+    if (stages) {
+        PartingSurfaceStage extendedStage;
+        extendedStage.name = "extended";
+        for (const auto& point : extended) {
+            extendedStage.boundary.push_back(liftFromPlane(point, basis));
+        }
+        stages->push_back(extendedStage);
+    }
+
+    // 6) 将二维边界抬升回三维，作为分型面边界
+    surface.boundary.clear();
+    surface.boundary.reserve(extended.size());
+    for (const auto& point : extended) {
+        surface.boundary.push_back(liftFromPlane(point, basis));
     }
     return surface;
 }
 
 std::vector<PartingSurfaceStage> buildPartingSurfaceStages(const PartingLine& line,
-                                                           double smoothingFactor) {
+                                                           const Vector3& direction,
+                                                           double smoothingFactor,
+                                                           double extension) {
     std::vector<PartingSurfaceStage> stages;
-    PartingSurfaceStage raw;
-    raw.name = "raw";
-    raw.boundary = line.points;
-    stages.push_back(raw);
-
-    PartingSurface smoothed = buildPartingSurface(line, smoothingFactor);
-    PartingSurfaceStage smoothStage;
-    smoothStage.name = "smoothed";
-    smoothStage.boundary = smoothed.boundary;
-    stages.push_back(smoothStage);
-
+    buildPartingSurface(line, direction, smoothingFactor, extension, &stages);
     return stages;
 }
 
@@ -304,6 +572,75 @@ ContourFace identifyMaxContour(const PartingLine& line, const Vector3& direction
     contour.centroid = centroid;
     contour.normal = normalized(direction);
     return contour;
+}
+
+std::vector<InterferenceIssue> checkPartingSurfaceQuality(const PartingSurface& surface,
+                                                          const Vector3& direction) {
+    std::vector<InterferenceIssue> issues;
+    if (surface.boundary.size() < 3) {
+        issues.push_back({"Parting surface has insufficient boundary points.", 0.9});
+        return issues;
+    }
+
+    Vector3 centroid{};
+    for (const auto& point : surface.boundary) {
+        centroid += point;
+    }
+    centroid = centroid / static_cast<double>(surface.boundary.size());
+    PlaneBasis basis = buildPlaneBasis(centroid, direction);
+
+    std::vector<Vector2> projected;
+    projected.reserve(surface.boundary.size());
+    for (const auto& point : surface.boundary) {
+        projected.push_back(projectToPlane(point, basis));
+    }
+
+    if (distance2D(projected.front(), projected.back()) > kClosureTolerance) {
+        issues.push_back({"Parting surface boundary is not closed.", 0.7});
+    }
+
+    std::vector<Vector2> loop = closeLoop2D(projected);
+    if (hasSelfIntersection2D(loop)) {
+        issues.push_back({"Parting surface boundary self-intersects after projection.", 0.8});
+    }
+
+    if (loop.size() >= 4) {
+        double minAngle = 180.0;
+        for (std::size_t i = 1; i + 1 < loop.size(); ++i) {
+            Vector2 prev = loop[i - 1];
+            Vector2 curr = loop[i];
+            Vector2 next = loop[i + 1];
+            Vector2 v1 = prev - curr;
+            Vector2 v2 = next - curr;
+            double denom = std::sqrt(v1.x * v1.x + v1.y * v1.y) *
+                           std::sqrt(v2.x * v2.x + v2.y * v2.y);
+            if (denom <= std::numeric_limits<double>::epsilon()) {
+                continue;
+            }
+            double cosine = std::clamp((v1.x * v2.x + v1.y * v2.y) / denom, -1.0, 1.0);
+            double angle = std::acos(cosine) * 180.0 / kPi;
+            minAngle = std::min(minAngle, angle);
+        }
+        if (minAngle < 20.0) {
+            issues.push_back({"Parting surface boundary has sharp corners.", 0.5});
+        }
+    }
+
+    Vector3 accumulatedNormal{};
+    for (std::size_t i = 1; i + 1 < surface.boundary.size(); ++i) {
+        Vector3 v1 = surface.boundary[i] - surface.boundary[0];
+        Vector3 v2 = surface.boundary[i + 1] - surface.boundary[0];
+        accumulatedNormal += cross(v1, v2);
+    }
+    if (length(accumulatedNormal) > std::numeric_limits<double>::epsilon()) {
+        Vector3 normal = normalized(accumulatedNormal);
+        double alignment = std::abs(dot(normal, normalized(direction)));
+        if (alignment < 0.95) {
+            issues.push_back({"Parting surface normal is not aligned with demold direction.", 0.6});
+        }
+    }
+
+    return issues;
 }
 
 SplitResult splitMesh(const Mesh& mesh, const Vector3& direction) {
@@ -571,7 +908,9 @@ SeparabilityReport evaluateSeparability(const Mesh& mesh, const DemoldEvaluation
                 obstacle.suggestedDirection = bestFallback.direction;
                 obstacle.visibilityRatio = bestFallback.visibilityRatio;
                 obstacle.undercutRatio = bestFallback.undercutRatio;
-                coreRegionsOut->push_back(region);
+                CoreRegion coreRegion = region;
+                coreRegion.pullDirection = bestFallback.direction;
+                coreRegionsOut->push_back(coreRegion);
             } else {
                 obstacle.type = ObstacleType::MultiDirection;
                 obstacle.suggestedDirection = bestFallback.direction;
@@ -584,31 +923,77 @@ SeparabilityReport evaluateSeparability(const Mesh& mesh, const DemoldEvaluation
     return report;
 }
 
-MoldAssembly buildMoldAssembly(const SplitResult& split, const Vector3& direction,
-                               double clearance) {
+MoldAssembly buildMoldAssembly(const Mesh& mesh, const PartingSurface& surface,
+                               const Vector3& direction, const AutoPartingSettings& settings,
+                               const std::vector<CoreRegion>& cores) {
     MoldAssembly assembly;
+
+    // 1) 计算与脱模方向对齐的包围盒，用于生成铸型毛坯
+    Vector3 planeOrigin = surface.boundary.empty() ? computeCentroid(mesh) : Vector3{};
+    if (!surface.boundary.empty()) {
+        for (const auto& point : surface.boundary) {
+            planeOrigin += point;
+        }
+        planeOrigin = planeOrigin / static_cast<double>(surface.boundary.size());
+    }
+    PlaneBasis basis = buildPlaneBasis(planeOrigin, direction);
+    Bounds partLocalBounds = computeLocalBounds(mesh, basis);
+    Bounds blankLocalBounds = expandLocalBounds(partLocalBounds, settings.moldBlankPadding);
+
+    // 2) 按收缩率放大产品模型，用于型腔减料
+    Vector3 localCenter{(partLocalBounds.min.x + partLocalBounds.max.x) / 2.0,
+                        (partLocalBounds.min.y + partLocalBounds.max.y) / 2.0,
+                        (partLocalBounds.min.z + partLocalBounds.max.z) / 2.0};
+    Bounds scaledLocalBounds = scaleLocalBounds(partLocalBounds, localCenter,
+                                                1.0 + settings.shrinkageFactor);
+
+    // 3) 以分型面所在平面切分毛坯，得到上下型
+    double splitCoordinate = 0.0;
+    Bounds upperBlankLocal = blankLocalBounds;
+    Bounds lowerBlankLocal = blankLocalBounds;
+    upperBlankLocal.min.z = std::max(upperBlankLocal.min.z, splitCoordinate);
+    lowerBlankLocal.max.z = std::min(lowerBlankLocal.max.z, splitCoordinate);
+
+    Bounds upperCavityLocal = scaledLocalBounds;
+    Bounds lowerCavityLocal = scaledLocalBounds;
+    upperCavityLocal.min.z = std::max(upperCavityLocal.min.z, splitCoordinate);
+    lowerCavityLocal.max.z = std::min(lowerCavityLocal.max.z, splitCoordinate);
+
     MoldBlock upper;
     upper.role = "UpperMold";
-    upper.cavityBounds = computeBoundsFromTriangles(split.upper);
-    upper.bounds = expandBounds(upper.cavityBounds, clearance);
+    upper.bounds = localBoundsToWorld(upperBlankLocal, basis);
+    upper.cavityBounds = localBoundsToWorld(upperCavityLocal, basis);
     upper.pullDirection = normalized(direction);
 
     MoldBlock lower;
     lower.role = "LowerMold";
-    lower.cavityBounds = computeBoundsFromTriangles(split.lower);
-    lower.bounds = expandBounds(lower.cavityBounds, clearance);
+    lower.bounds = localBoundsToWorld(lowerBlankLocal, basis);
+    lower.cavityBounds = localBoundsToWorld(lowerCavityLocal, basis);
     lower.pullDirection = normalized(direction * -1.0);
 
     assembly.blocks.push_back(upper);
     assembly.blocks.push_back(lower);
-    assembly.overallBounds = expandBounds(upper.cavityBounds, clearance);
-    Bounds lowerBounds = expandBounds(lower.cavityBounds, clearance);
-    assembly.overallBounds.min.x = std::min(assembly.overallBounds.min.x, lowerBounds.min.x);
-    assembly.overallBounds.min.y = std::min(assembly.overallBounds.min.y, lowerBounds.min.y);
-    assembly.overallBounds.min.z = std::min(assembly.overallBounds.min.z, lowerBounds.min.z);
-    assembly.overallBounds.max.x = std::max(assembly.overallBounds.max.x, lowerBounds.max.x);
-    assembly.overallBounds.max.y = std::max(assembly.overallBounds.max.y, lowerBounds.max.y);
-    assembly.overallBounds.max.z = std::max(assembly.overallBounds.max.z, lowerBounds.max.z);
+    assembly.overallBounds = upper.bounds;
+    assembly.overallBounds.min.x = std::min(assembly.overallBounds.min.x, lower.bounds.min.x);
+    assembly.overallBounds.min.y = std::min(assembly.overallBounds.min.y, lower.bounds.min.y);
+    assembly.overallBounds.min.z = std::min(assembly.overallBounds.min.z, lower.bounds.min.z);
+    assembly.overallBounds.max.x = std::max(assembly.overallBounds.max.x, lower.bounds.max.x);
+    assembly.overallBounds.max.y = std::max(assembly.overallBounds.max.y, lower.bounds.max.y);
+    assembly.overallBounds.max.z = std::max(assembly.overallBounds.max.z, lower.bounds.max.z);
+
+    // 4) 根据倒扣区域生成砂芯、芯头和芯座的几何范围
+    for (const auto& core : cores) {
+        CoreInsert insert;
+        insert.pullDirection = length(core.pullDirection) > std::numeric_limits<double>::epsilon()
+                                   ? core.pullDirection
+                                   : direction;
+        insert.bodyBounds = expandBounds(core.bounds, settings.moldClearance);
+        insert.headBounds = extendBoundsAlongDirection(insert.bodyBounds, insert.pullDirection,
+                                                       settings.coreHeadLength);
+        insert.seatBounds = expandBounds(insert.headBounds, settings.coreSeatClearance);
+        assembly.cores.push_back(insert);
+    }
+
     return assembly;
 }
 
@@ -634,11 +1019,16 @@ std::vector<StrategyOption> buildStrategyOptions(const SeparabilityReport& repor
 
 std::vector<InterferenceIssue> checkInterference(const Mesh& mesh, const SplitResult& split,
                                                  const PartingLine& line,
-                                                 const DemoldEvaluation& evaluation) {
+                                                 const PartingSurface& surface,
+                                                 const DemoldEvaluation& evaluation,
+                                                 const MoldAssembly& assembly) {
     std::vector<InterferenceIssue> issues;
     if (line.points.empty()) {
         issues.push_back({"Parting line extraction produced no boundary points.", 0.8});
     }
+    std::vector<InterferenceIssue> surfaceIssues =
+        checkPartingSurfaceQuality(surface, evaluation.direction);
+    issues.insert(issues.end(), surfaceIssues.begin(), surfaceIssues.end());
     Bounds upperBounds = computeBoundsFromTriangles(split.upper);
     Bounds lowerBounds = computeBoundsFromTriangles(split.lower);
     double overlapX = std::min(upperBounds.max.x, lowerBounds.max.x) -
@@ -658,6 +1048,12 @@ std::vector<InterferenceIssue> checkInterference(const Mesh& mesh, const SplitRe
     if (mesh.triangles.empty()) {
         issues.push_back({"Mesh has no valid triangles after preprocessing.", 1.0});
     }
+    for (const auto& core : assembly.cores) {
+        if (!boundsContains(assembly.overallBounds, core.seatBounds)) {
+            issues.push_back({"Core seat exceeds mold blank bounds, adjust core head or padding.",
+                              0.5});
+        }
+    }
     return issues;
 }
 
@@ -669,11 +1065,15 @@ AutoPartingResult AutoPartingPipeline::run(const Mesh& input, const AutoPartingS
     result.demold = selectBestDemoldDirection(result.cleanedMesh, settings);
     result.partingLine = extractPartingLine(result.cleanedMesh, result.demold.direction);
     result.partingSurfaceStages = buildPartingSurfaceStages(result.partingLine,
-                                                            settings.smoothingFactor);
+                                                            result.demold.direction,
+                                                            settings.smoothingFactor,
+                                                            settings.partingSurfaceExtension);
     if (!result.partingSurfaceStages.empty()) {
         result.partingSurface.boundary = result.partingSurfaceStages.back().boundary;
     } else {
-        result.partingSurface = buildPartingSurface(result.partingLine, settings.smoothingFactor);
+        result.partingSurface = buildPartingSurface(result.partingLine, result.demold.direction,
+                                                    settings.smoothingFactor,
+                                                    settings.partingSurfaceExtension, nullptr);
     }
     result.maxContour = identifyMaxContour(result.partingLine, result.demold.direction);
     result.split = splitMesh(result.cleanedMesh, result.demold.direction);
@@ -682,11 +1082,11 @@ AutoPartingResult AutoPartingPipeline::run(const Mesh& input, const AutoPartingS
                                                                 settings.draftAngleDegrees);
     result.separability = evaluateSeparability(result.cleanedMesh, result.demold, undercutRegions,
                                                settings, &result.cores);
-    result.moldAssembly = buildMoldAssembly(result.split, result.demold.direction,
-                                            settings.moldClearance);
+    result.moldAssembly = buildMoldAssembly(result.cleanedMesh, result.partingSurface,
+                                            result.demold.direction, settings, result.cores);
     result.strategies = buildStrategyOptions(result.separability, result.cores.size());
     result.issues = checkInterference(result.cleanedMesh, result.split, result.partingLine,
-                                      result.demold);
+                                      result.partingSurface, result.demold, result.moldAssembly);
     return result;
 }
 

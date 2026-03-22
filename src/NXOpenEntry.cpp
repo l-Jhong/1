@@ -3,6 +3,7 @@
 // Mandatory UF Includes
 #include <uf.h>
 #include <uf_object_types.h>
+#include <uf_modl.h>
 
 // Internal Includes
 #include <NXOpen/ListingWindow.hxx>
@@ -60,6 +61,71 @@ casting::Mesh buildDemoMesh(double size) {
         {2, 6, 7}, {2, 7, 3},
         {3, 7, 4}, {3, 4, 0}
     };
+    return mesh;
+}
+
+bool appendBoundingBoxMesh(tag_t bodyTag, casting::Mesh* mesh) {
+    if (!mesh) {
+        return false;
+    }
+    double corner[3]{};
+    double directions[9]{};
+    double distances[3]{};
+    if (UF_MODL_ask_bounding_box(bodyTag, corner, directions, distances) != 0) {
+        return false;
+    }
+
+    // 使用体的包围盒生成一个近似网格，保证不同零件有不同的输入几何
+    casting::Vector3 origin{corner[0], corner[1], corner[2]};
+    casting::Vector3 axisU{directions[0], directions[1], directions[2]};
+    casting::Vector3 axisV{directions[3], directions[4], directions[5]};
+    casting::Vector3 axisW{directions[6], directions[7], directions[8]};
+
+    std::size_t base = mesh->vertices.size();
+    mesh->vertices.push_back(origin);
+    mesh->vertices.push_back(origin + axisU * distances[0]);
+    mesh->vertices.push_back(origin + axisU * distances[0] + axisV * distances[1]);
+    mesh->vertices.push_back(origin + axisV * distances[1]);
+    mesh->vertices.push_back(origin + axisW * distances[2]);
+    mesh->vertices.push_back(origin + axisU * distances[0] + axisW * distances[2]);
+    mesh->vertices.push_back(origin + axisU * distances[0] + axisV * distances[1] +
+                             axisW * distances[2]);
+    mesh->vertices.push_back(origin + axisV * distances[1] + axisW * distances[2]);
+
+    mesh->triangles.push_back({base + 0, base + 1, base + 2});
+    mesh->triangles.push_back({base + 0, base + 2, base + 3});
+    mesh->triangles.push_back({base + 4, base + 6, base + 5});
+    mesh->triangles.push_back({base + 4, base + 7, base + 6});
+    mesh->triangles.push_back({base + 0, base + 4, base + 5});
+    mesh->triangles.push_back({base + 0, base + 5, base + 1});
+    mesh->triangles.push_back({base + 1, base + 5, base + 6});
+    mesh->triangles.push_back({base + 1, base + 6, base + 2});
+    mesh->triangles.push_back({base + 2, base + 6, base + 7});
+    mesh->triangles.push_back({base + 2, base + 7, base + 3});
+    mesh->triangles.push_back({base + 3, base + 7, base + 4});
+    mesh->triangles.push_back({base + 3, base + 4, base + 0});
+    return true;
+}
+
+casting::Mesh buildMeshFromWorkPart(BasePart* workPart) {
+    casting::Mesh mesh;
+    if (!workPart) {
+        return mesh;
+    }
+
+    // 读取当前工作部件的实体，生成用于分析的网格
+    std::vector<NXOpen::Body*> bodies = workPart->Bodies()->GetArray();
+    for (NXOpen::Body* body : bodies) {
+        if (!body) {
+            continue;
+        }
+        appendBoundingBoxMesh(body->Tag(), &mesh);
+    }
+
+    // 如果没有成功获取实体网格，则退回到示例网格
+    if (mesh.triangles.empty()) {
+        mesh = buildDemoMesh(10.0);
+    }
     return mesh;
 }
 
@@ -160,7 +226,8 @@ void MyClass::highlightPartingSurface(const std::vector<casting::Vector3>& bound
 //------------------------------------------------------------------------------
 void MyClass::do_it() {
     casting::AutoPartingPipeline pipeline;
-    casting::Mesh mesh = buildDemoMesh(10.0);
+    // 优先使用当前零件的几何数据，避免不同零件得到相同结果
+    casting::Mesh mesh = buildMeshFromWorkPart(workPart);
     casting::AutoPartingResult result = pipeline.run(mesh);
 
     stringstream stream;
@@ -195,6 +262,11 @@ void MyClass::do_it() {
 //------------------------------------------------------------------------------
 //  Explicit Execution
 extern "C" DllExport void ufusr(char* parm, int* returnCode, int rlen) {
+    if (UF_initialize() != 0) {
+        UI::GetUI()->NXMessageBox()->Show("UF Error", NXOpen::NXMessageBox::DialogTypeError,
+                                          "UF_initialize failed.");
+        return;
+    }
     try {
         // Create NXOpen C++ class instance
         MyClass* theMyClass;
@@ -211,6 +283,7 @@ extern "C" DllExport void ufusr(char* parm, int* returnCode, int rlen) {
         UI::GetUI()->NXMessageBox()->Show("Exception", NXOpen::NXMessageBox::DialogTypeError,
                                           "Unknown Exception.");
     }
+    UF_terminate();
 }
 
 //------------------------------------------------------------------------------

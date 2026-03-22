@@ -40,11 +40,13 @@ int main() {
     std::cout << "Visibility ratio: " << result.demold.visibilityRatio << "\n";
     std::cout << "Undercut ratio: " << result.demold.undercutRatio << "\n";
     std::cout << "Parting line points: " << result.partingLine.points.size() << "\n";
+    std::cout << "Parting surface stages: " << result.partingSurfaceStages.size() << "\n";
     std::cout << "Core regions: " << result.cores.size() << "\n";
     std::cout << "Separability: " << (result.separability.separable ? "separable" : "not separable")
               << " | Obstacles: " << result.separability.obstacles.size() << "\n";
     std::cout << "Max contour area: " << result.maxContour.area << "\n";
     std::cout << "Mold blocks: " << result.moldAssembly.blocks.size() << "\n";
+    std::cout << "Core inserts: " << result.moldAssembly.cores.size() << "\n";
     std::cout << "Interference issues: " << result.issues.size() << "\n";
 
     return 0;
