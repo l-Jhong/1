@@ -29,7 +29,7 @@
 
 // Std C++ Includes
 #include <array>
-#include <iomanip>
+#include <cstdio>
 #include <iostream>
 #include <sstream>
 
@@ -243,22 +243,13 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
             return;
         }
         double corner[3] = {bounds.min.x, bounds.min.y, bounds.min.z};
-        std::array<std::string, 3> edgeStrings;
-        std::ostringstream formatter;
-        formatter << std::fixed << std::setprecision(6);
-        formatter << edgeX;
-        edgeStrings[0] = formatter.str();
-        formatter.str("");
-        formatter.clear();
-        formatter << edgeY;
-        edgeStrings[1] = formatter.str();
-        formatter.str("");
-        formatter.clear();
-        formatter << edgeZ;
-        edgeStrings[2] = formatter.str();
-        std::array<char*, 3> edges = {const_cast<char*>(edgeStrings[0].c_str()),
-                                      const_cast<char*>(edgeStrings[1].c_str()),
-                                      const_cast<char*>(edgeStrings[2].c_str())};
+        std::array<std::array<char, 32>, 3> edgeBuffers{};
+        std::snprintf(edgeBuffers[0].data(), edgeBuffers[0].size(), "%.6f", edgeX);
+        std::snprintf(edgeBuffers[1].data(), edgeBuffers[1].size(), "%.6f", edgeY);
+        std::snprintf(edgeBuffers[2].data(), edgeBuffers[2].size(), "%.6f", edgeZ);
+        std::array<char*, 3> edges = {edgeBuffers[0].data(),
+                                      edgeBuffers[1].data(),
+                                      edgeBuffers[2].data()};
         tag_t blockTag = NULL_TAG;
         if (UF_MODL_create_block1(corner, UF_POSITIVE, edges.data(), &blockTag) == 0 &&
             blockTag != NULL_TAG) {
