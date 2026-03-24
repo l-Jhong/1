@@ -31,6 +31,7 @@
 #include <array>
 #include <cstdio>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 using namespace NXOpen;
@@ -244,9 +245,10 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
         }
         double corner[3] = {bounds.min.x, bounds.min.y, bounds.min.z};
         std::array<std::array<char, 32>, 3> edgeBuffers{};
-        std::snprintf(edgeBuffers[0].data(), edgeBuffers[0].size(), "%.6f", edgeX);
-        std::snprintf(edgeBuffers[1].data(), edgeBuffers[1].size(), "%.6f", edgeY);
-        std::snprintf(edgeBuffers[2].data(), edgeBuffers[2].size(), "%.6f", edgeZ);
+        int precision = std::numeric_limits<double>::max_digits10;
+        std::snprintf(edgeBuffers[0].data(), edgeBuffers[0].size(), "%.*g", precision, edgeX);
+        std::snprintf(edgeBuffers[1].data(), edgeBuffers[1].size(), "%.*g", precision, edgeY);
+        std::snprintf(edgeBuffers[2].data(), edgeBuffers[2].size(), "%.*g", precision, edgeZ);
         std::array<char*, 3> edges = {edgeBuffers[0].data(),
                                       edgeBuffers[1].data(),
                                       edgeBuffers[2].data()};
