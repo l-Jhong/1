@@ -28,6 +28,8 @@
 #include <NXOpen/Session.hxx>
 
 // Std C++ Includes
+#include <array>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 
@@ -69,18 +71,20 @@ bool appendBoundingBoxMesh(tag_t bodyTag, casting::Mesh* mesh) {
     if (!mesh) {
         return false;
     }
-    double corner[3]{};
-    double directions[9]{};
-    double distances[3]{};
-    if (UF_MODL_ask_bounding_box(bodyTag, corner, directions, distances) != 0) {
+    double minCorner[3]{};
+    double maxCorner[3]{};
+    if (UF_MODL_ask_bounding_box(bodyTag, minCorner, maxCorner) != 0) {
         return false;
     }
 
     // 使用体的包围盒生成一个近似网格，保证不同零件有不同的输入几何
-    casting::Vector3 origin{corner[0], corner[1], corner[2]};
-    casting::Vector3 axisU{directions[0], directions[1], directions[2]};
-    casting::Vector3 axisV{directions[3], directions[4], directions[5]};
-    casting::Vector3 axisW{directions[6], directions[7], directions[8]};
+    casting::Vector3 origin{minCorner[0], minCorner[1], minCorner[2]};
+    casting::Vector3 axisU{1.0, 0.0, 0.0};
+    casting::Vector3 axisV{0.0, 1.0, 0.0};
+    casting::Vector3 axisW{0.0, 0.0, 1.0};
+    double distances[3] = {maxCorner[0] - minCorner[0],
+                           maxCorner[1] - minCorner[1],
+                           maxCorner[2] - minCorner[2]};
 
     std::size_t base = mesh->vertices.size();
     mesh->vertices.push_back(origin);
@@ -115,7 +119,11 @@ casting::Mesh buildMeshFromWorkPart(BasePart* workPart) {
     }
 
     // 读取当前工作部件的实体，生成用于分析的网格
-    std::vector<NXOpen::Body*> bodies = workPart->Bodies()->GetArray();
+    NXOpen::Part* part = dynamic_cast<NXOpen::Part*>(workPart);
+    if (!part) {
+        return mesh;
+    }
+    std::vector<NXOpen::Body*> bodies = part->Bodies()->GetArray();
     for (NXOpen::Body* body : bodies) {
         if (!body) {
             continue;
@@ -235,9 +243,25 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
             return;
         }
         double corner[3] = {bounds.min.x, bounds.min.y, bounds.min.z};
-        double edges[3] = {edgeX, edgeY, edgeZ};
+        std::array<std::string, 3> edgeStrings;
+        std::ostringstream formatter;
+        formatter << std::fixed << std::setprecision(6);
+        formatter << edgeX;
+        edgeStrings[0] = formatter.str();
+        formatter.str("");
+        formatter.clear();
+        formatter << edgeY;
+        edgeStrings[1] = formatter.str();
+        formatter.str("");
+        formatter.clear();
+        formatter << edgeZ;
+        edgeStrings[2] = formatter.str();
+        std::array<char*, 3> edges = {const_cast<char*>(edgeStrings[0].c_str()),
+                                      const_cast<char*>(edgeStrings[1].c_str()),
+                                      const_cast<char*>(edgeStrings[2].c_str())};
         tag_t blockTag = NULL_TAG;
-        if (UF_MODL_create_block1(corner, edges, &blockTag) == 0 && blockTag != NULL_TAG) {
+        if (UF_MODL_create_block1(corner, UF_POSITIVE, edges.data(), &blockTag) == 0 &&
+            blockTag != NULL_TAG) {
             UF_OBJ_set_color(blockTag, color);
         }
     };
