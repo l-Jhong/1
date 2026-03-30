@@ -28,7 +28,6 @@
 #include <NXOpen/Session.hxx>
 
 // Std C++ Includes
-#include <array>
 #include <cstdio>
 #include <iostream>
 #include <limits>
@@ -72,20 +71,18 @@ bool appendBoundingBoxMesh(tag_t bodyTag, casting::Mesh* mesh) {
     if (!mesh) {
         return false;
     }
-    double minCorner[3]{};
-    double maxCorner[3]{};
-    if (UF_MODL_ask_bounding_box(bodyTag, minCorner, maxCorner) != 0) {
+    double corner[3]{};
+    double directions[9]{};
+    double distances[3]{};
+    if (UF_MODL_ask_bounding_box(bodyTag, corner, directions, distances) != 0) {
         return false;
     }
 
     // 使用体的包围盒生成一个近似网格，保证不同零件有不同的输入几何
-    casting::Vector3 origin{minCorner[0], minCorner[1], minCorner[2]};
-    casting::Vector3 axisU{1.0, 0.0, 0.0};
-    casting::Vector3 axisV{0.0, 1.0, 0.0};
-    casting::Vector3 axisW{0.0, 0.0, 1.0};
-    double distances[3] = {maxCorner[0] - minCorner[0],
-                           maxCorner[1] - minCorner[1],
-                           maxCorner[2] - minCorner[2]};
+    casting::Vector3 origin{corner[0], corner[1], corner[2]};
+    casting::Vector3 axisU{directions[0], directions[1], directions[2]};
+    casting::Vector3 axisV{directions[3], directions[4], directions[5]};
+    casting::Vector3 axisW{directions[6], directions[7], directions[8]};
 
     std::size_t base = mesh->vertices.size();
     mesh->vertices.push_back(origin);
@@ -124,8 +121,10 @@ casting::Mesh buildMeshFromWorkPart(BasePart* workPart) {
     if (!part) {
         return mesh;
     }
-    std::vector<NXOpen::Body*> bodies = part->Bodies()->GetArray();
-    for (NXOpen::Body* body : bodies) {
+    NXOpen::BodyCollection* bodyCollection = part->Bodies();
+    int bodyCount = bodyCollection ? bodyCollection->GetCount() : 0;
+    for (int index = 0; index < bodyCount; ++index) {
+        NXOpen::Body* body = bodyCollection->GetItem(index);
         if (!body) {
             continue;
         }
@@ -244,16 +243,12 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
             return;
         }
         double corner[3] = {bounds.min.x, bounds.min.y, bounds.min.z};
-        std::array<std::array<char, 32>, 3> edgeBuffers{};
+        char edgeString[128]{};
         int precision = std::numeric_limits<double>::max_digits10;
-        std::snprintf(edgeBuffers[0].data(), edgeBuffers[0].size(), "%.*g", precision, edgeX);
-        std::snprintf(edgeBuffers[1].data(), edgeBuffers[1].size(), "%.*g", precision, edgeY);
-        std::snprintf(edgeBuffers[2].data(), edgeBuffers[2].size(), "%.*g", precision, edgeZ);
-        std::array<char*, 3> edges = {edgeBuffers[0].data(),
-                                      edgeBuffers[1].data(),
-                                      edgeBuffers[2].data()};
+        std::snprintf(edgeString, sizeof(edgeString), "%.*g,%.*g,%.*g", precision, edgeX,
+                      precision, edgeY, precision, edgeZ);
         tag_t blockTag = NULL_TAG;
-        if (UF_MODL_create_block1(corner, UF_POSITIVE, edges.data(), &blockTag) == 0 &&
+        if (UF_MODL_create_block1(UF_POSITIVE, corner, edgeString, &blockTag) == 0 &&
             blockTag != NULL_TAG) {
             UF_OBJ_set_color(blockTag, color);
         }
