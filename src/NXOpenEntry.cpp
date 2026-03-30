@@ -78,7 +78,7 @@ bool appendBoundingBoxMesh(tag_t bodyTag, casting::Mesh* mesh) {
         return false;
     }
 
-    // 使用体的包围盒生成一个盒形网格，保证不同零件有不同的输入几何
+    // 使用体的包围盒尺寸生成简化盒形网格，保证不同零件有不同的输入几何
     casting::Vector3 origin{corner[0], corner[1], corner[2]};
     casting::Vector3 axisU{directions[0], directions[1], directions[2]};
     casting::Vector3 axisV{directions[3], directions[4], directions[5]};
