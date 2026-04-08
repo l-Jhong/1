@@ -235,12 +235,13 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
     if (!workPart) {
         return;
     }
-    auto createBlock = [](const casting::Bounds& bounds, int color) {
+    // 返回创建的块体 tag，失败时返回 NULL_TAG，确保布尔运算前包围盒已生成
+    auto createBlock = [](const casting::Bounds& bounds, int color) -> tag_t {
         double edgeX = bounds.max.x - bounds.min.x;
         double edgeY = bounds.max.y - bounds.min.y;
         double edgeZ = bounds.max.z - bounds.min.z;
         if (edgeX <= 0.0 || edgeY <= 0.0 || edgeZ <= 0.0) {
-            return;
+            return NULL_TAG;
         }
         double corner[3] = {bounds.min.x, bounds.min.y, bounds.min.z};
         char edgeString[128]{};
@@ -252,12 +253,21 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
             blockTag != NULL_TAG) {
             UF_OBJ_set_color(blockTag, color);
         }
+        return blockTag;
     };
 
-    // 使用不同颜色展示上、下模和砂芯（仅显示，不输出文件）
+    // 使用不同颜色展示上、下模（仅显示，不输出文件）
+    // 只有在包围盒成功生成后，才可对该 tag 进行后续布尔运算
+    tag_t upperTag = NULL_TAG;
+    tag_t lowerTag = NULL_TAG;
     if (assembly.blocks.size() >= 2) {
-        createBlock(assembly.blocks[0].bounds, casting::kUpperMoldColor);
-        createBlock(assembly.blocks[1].bounds, casting::kLowerMoldColor);
+        upperTag = createBlock(assembly.blocks[0].bounds, casting::kUpperMoldColor);
+        lowerTag = createBlock(assembly.blocks[1].bounds, casting::kLowerMoldColor);
+    }
+
+    // 仅在上下模包围盒均已成功生成的前提下，才创建砂芯几何（避免对空体执行布尔运算）
+    if (upperTag == NULL_TAG || lowerTag == NULL_TAG) {
+        return;
     }
     for (const auto& core : assembly.cores) {
         createBlock(core.bodyBounds, casting::kCoreColor);
