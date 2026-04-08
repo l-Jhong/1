@@ -14,6 +14,7 @@ add_library(casting_auto_parting
 target_include_directories(casting_auto_parting
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/casting
 )
 
 add_executable(casting_auto_parting_demo src/main.cpp)
