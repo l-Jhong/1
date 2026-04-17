@@ -646,11 +646,18 @@ namespace casting {
         }
 
         // Builds the parting surface directly from the max contour face.
-        // The max contour is the convex hull of the parting-line projected onto the plane
-        // perpendicular to the demold direction, so the resulting surface is guaranteed to
-        // be a flat plane perpendicular to 'direction' — satisfying the requirement that
-        // the parting surface must be vertical to the draft direction.
-        // The boundary is extended outward by 'extension' to cover the full mold footprint.
+        //
+        // Inputs:
+        //   contour   – max contour face (convex hull of the parting-line projected onto
+        //               the plane perpendicular to 'direction'); its boundary points all
+        //               lie at z_local ≈ 0 in the plane whose normal is 'direction'.
+        //   direction – demold / draft direction (used as the plane normal).
+        //   extension – outward extension distance to give the surface adequate coverage.
+        //   stages    – optional collector for intermediate boundary snapshots.
+        //
+        // Guarantee: every point in the returned surface.boundary lies on the flat plane
+        // through contour.centroid with normal = normalized(direction).  This satisfies
+        // the requirement that the parting surface must be perpendicular to the draft axis.
         PartingSurface buildPlanarPartingSurface(const ContourFace& contour,
             const Vector3& direction,
             double extension,
@@ -1155,7 +1162,9 @@ namespace casting {
             Bounds partLocalBounds = computeLocalBounds(mesh, basis);
             Bounds blankLocalBounds = expandLocalBounds(partLocalBounds, settings.moldBlankPadding);
 
-            // 2) 按收缩率放大产品模型，用于型腔减料
+            // 2) 按收缩率放大产品模型，用于型腔减料。
+            // 铸件冷却时收缩，所以铸型型腔必须比零件略大（放大系数 = 1 + shrinkageFactor）
+            // 才能保证铸件冷却后与设计尺寸吻合。
             Vector3 localCenter{ (partLocalBounds.min.x + partLocalBounds.max.x) / 2.0,
                                 (partLocalBounds.min.y + partLocalBounds.max.y) / 2.0,
                                 (partLocalBounds.min.z + partLocalBounds.max.z) / 2.0 };

@@ -264,7 +264,8 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
     if (!workPart) {
         return;
     }
-    // 返回创建的块体 tag，失败时返回 NULL_TAG，确保布尔运算前包围盒已生成
+    // 返回创建的块体 tag；若任意一维边长 ≤ 0 或 UF_MODL_create_block1 调用失败，则返回 NULL_TAG。
+    // 调用方须在执行布尔运算前检查返回值，避免对无效体进行操作。
     auto createBlock = [](const casting::Bounds& bounds, int color) -> tag_t {
         double edgeX = bounds.max.x - bounds.min.x;
         double edgeY = bounds.max.y - bounds.min.y;
