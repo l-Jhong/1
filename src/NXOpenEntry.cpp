@@ -110,28 +110,57 @@ bool appendBoundingBoxMesh(tag_t bodyTag, casting::Mesh* mesh) {
     return true;
 }
 
-casting::Mesh buildMeshFromWorkPart(BasePart* workPart) {
+// outSolidCount / outSheetCount 可为 nullptr，调用方不需要统计时传入 nullptr
+casting::Mesh buildMeshFromWorkPart(BasePart* workPart,
+                                    bool* outUsedSheetBodies = nullptr,
+                                    int*  outSolidCount     = nullptr,
+                                    int*  outSheetCount     = nullptr) {
     casting::Mesh mesh;
+    if (outUsedSheetBodies) *outUsedSheetBodies = false;
+    if (outSolidCount)      *outSolidCount      = 0;
+    if (outSheetCount)      *outSheetCount      = 0;
+
     if (!workPart) {
         return mesh;
     }
 
-    // 读取当前工作部件的实体，生成用于分析的网格
+    // 读取当前工作部件的体，生成用于分析的网格
     NXOpen::Part* part = dynamic_cast<NXOpen::Part*>(workPart);
     if (!part) {
         return mesh;
     }
     NXOpen::BodyCollection* bodyCollection = part->Bodies();
     int bodyCount = bodyCollection ? bodyCollection->GetCount() : 0;
+
+    // 第一遍：仅处理实体（solid body）
     for (int index = 0; index < bodyCount; ++index) {
         NXOpen::Body* body = bodyCollection->GetItem(index);
         if (!body) {
             continue;
         }
-        appendBoundingBoxMesh(body->Tag(), &mesh);
+        if (body->IsSolidBody()) {
+            if (outSolidCount) (*outSolidCount)++;
+            appendBoundingBoxMesh(body->Tag(), &mesh);
+        } else {
+            if (outSheetCount) (*outSheetCount)++;
+        }
     }
 
-    // 如果没有成功获取实体网格，则退回到示例网格
+    // 第二遍：若无实体，回退到所有体（面片体，来自 STEP/STL 等中间格式）
+    if (mesh.triangles.empty()) {
+        for (int index = 0; index < bodyCount; ++index) {
+            NXOpen::Body* body = bodyCollection->GetItem(index);
+            if (!body || body->IsSolidBody()) {
+                continue;
+            }
+            appendBoundingBoxMesh(body->Tag(), &mesh);
+        }
+        if (!mesh.triangles.empty() && outUsedSheetBodies) {
+            *outUsedSheetBodies = true;
+        }
+    }
+
+    // 如果仍未获取到任何网格，则退回到示例网格
     if (mesh.triangles.empty()) {
         mesh = buildDemoMesh(10.0);
     }
@@ -279,8 +308,26 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
 //------------------------------------------------------------------------------
 void MyClass::do_it() {
     casting::AutoPartingPipeline pipeline;
+
     // 优先使用当前零件的几何数据，避免不同零件得到相同结果
-    casting::Mesh mesh = buildMeshFromWorkPart(workPart);
+    bool usedSheetBodies = false;
+    int  solidCount      = 0;
+    int  sheetCount      = 0;
+    casting::Mesh mesh = buildMeshFromWorkPart(workPart, &usedSheetBodies,
+                                               &solidCount, &sheetCount);
+
+    // 打印体类型统计，帮助用户确认当前零件的几何状态
+    stringstream bodyStats;
+    bodyStats << "Body stats — Solid: " << solidCount << " | Sheet: " << sheetCount;
+    print(bodyStats.str());
+
+    // 若当前零件只含面片体（来自 STEP/STL 等中间格式），给出友好提示
+    if (usedSheetBodies) {
+        print("Warning: no solid bodies found. Analysis is running on sheet bodies "
+              "(imported from STEP/STL). For full mold operations, please convert "
+              "them to solids using the Sew or Thicken command first.");
+    }
+
     casting::AutoPartingResult result = pipeline.run(mesh);
 
     stringstream stream;
