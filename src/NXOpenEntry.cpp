@@ -298,6 +298,24 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
     if (upperTag == NULL_TAG || lowerTag == NULL_TAG) {
         return;
     }
+
+    // 按收缩率放大的零件型腔（cavityBounds）从上下模坯料中布尔减去，得到实际铸型。
+    // UF_MODL_boolean 参数：operation=2（减），keep_tool=0（减完后销毁工具体）。
+    if (assembly.blocks[0].subtractPart) {
+        tag_t upperCavity = createBlock(assembly.blocks[0].cavityBounds, 0);
+        if (upperCavity != NULL_TAG) {
+            tag_t boolResult = NULL_TAG;
+            UF_MODL_boolean(2, 0, upperTag, 1, &upperCavity, &boolResult);
+        }
+    }
+    if (assembly.blocks[1].subtractPart) {
+        tag_t lowerCavity = createBlock(assembly.blocks[1].cavityBounds, 0);
+        if (lowerCavity != NULL_TAG) {
+            tag_t boolResult = NULL_TAG;
+            UF_MODL_boolean(2, 0, lowerTag, 1, &lowerCavity, &boolResult);
+        }
+    }
+
     for (const auto& core : assembly.cores) {
         createBlock(core.bodyBounds, casting::kCoreColor);
         createBlock(core.headBounds, casting::kCoreHeadColor);

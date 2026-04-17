@@ -645,6 +645,56 @@ namespace casting {
             return stages;
         }
 
+        // Builds the parting surface directly from the max contour face.
+        // The max contour is the convex hull of the parting-line projected onto the plane
+        // perpendicular to the demold direction, so the resulting surface is guaranteed to
+        // be a flat plane perpendicular to 'direction' — satisfying the requirement that
+        // the parting surface must be vertical to the draft direction.
+        // The boundary is extended outward by 'extension' to cover the full mold footprint.
+        PartingSurface buildPlanarPartingSurface(const ContourFace& contour,
+            const Vector3& direction,
+            double extension,
+            std::vector<PartingSurfaceStage>* stages) {
+            PartingSurface surface;
+            if (contour.boundary.size() < 3) {
+                return surface;
+            }
+            // Build a plane basis centred at the max-contour centroid with 'direction' as normal.
+            PlaneBasis basis = buildPlaneBasis(contour.centroid, direction);
+
+            if (stages) {
+                stages->push_back({ "max_contour", contour.boundary });
+            }
+
+            // Project the contour boundary to the 2D plane (z ≈ 0 by construction).
+            std::vector<Vector2> projected;
+            projected.reserve(contour.boundary.size());
+            for (const auto& point : contour.boundary) {
+                projected.push_back(projectToPlane(point, basis));
+            }
+            projected = closeLoop2D(projected);
+
+            // Extend outward so the parting surface fully covers the mold blank footprint.
+            std::vector<Vector2> extended = extendCurve2D(projected, extension);
+            extended = closeLoop2D(extended);
+
+            if (stages) {
+                PartingSurfaceStage extStage;
+                extStage.name = "extended";
+                for (const auto& point : extended) {
+                    extStage.boundary.push_back(liftFromPlane(point, basis));
+                }
+                stages->push_back(extStage);
+            }
+
+            // Lift back to 3D — all points lie on the flat plane (local z = 0).
+            surface.boundary.reserve(extended.size());
+            for (const auto& point : extended) {
+                surface.boundary.push_back(liftFromPlane(point, basis));
+            }
+            return surface;
+        }
+
         ContourFace identifyMaxContour(const PartingLine& line, const Vector3& direction) {
             ContourFace contour;
             if (line.points.size() < 3) {
@@ -1229,23 +1279,34 @@ namespace casting {
         result.cleanedMesh = preprocessMesh(input, settings.minTriangleArea);
         result.demold = selectBestDemoldDirection(result.cleanedMesh, settings);
         result.partingLine = extractPartingLine(result.cleanedMesh, result.demold.direction);
-        result.partingSurfaceStages = buildPartingSurfaceStages(result.partingLine,
-            result.demold.direction,
-            settings.smoothingFactor,
-            settings.partingSurfaceExtension,
-            settings.preferPlanarSurface,
-            settings.nonPlanarDeviationRatio);
-        if (!result.partingSurfaceStages.empty()) {
-            result.partingSurface.boundary = result.partingSurfaceStages.back().boundary;
-        }
-        else {
-            result.partingSurface = buildPartingSurface(result.partingLine, result.demold.direction,
+        // Identify the max contour first: it is the largest cross-section perpendicular to
+        // the demold direction and serves as the authoritative reference for the parting surface.
+        result.maxContour = identifyMaxContour(result.partingLine, result.demold.direction);
+        // Build the parting surface from the max contour so it is a flat plane perpendicular
+        // to the demold direction.  Fall back to the original approach if the contour is
+        // degenerate (fewer than 3 boundary points).
+        if (result.maxContour.boundary.size() >= 3) {
+            result.partingSurface = buildPlanarPartingSurface(
+                result.maxContour, result.demold.direction,
+                settings.partingSurfaceExtension, &result.partingSurfaceStages);
+        } else {
+            result.partingSurfaceStages = buildPartingSurfaceStages(result.partingLine,
+                result.demold.direction,
                 settings.smoothingFactor,
                 settings.partingSurfaceExtension,
                 settings.preferPlanarSurface,
-                settings.nonPlanarDeviationRatio, nullptr);
+                settings.nonPlanarDeviationRatio);
+            if (!result.partingSurfaceStages.empty()) {
+                result.partingSurface.boundary = result.partingSurfaceStages.back().boundary;
+            } else {
+                result.partingSurface = buildPartingSurface(result.partingLine,
+                    result.demold.direction,
+                    settings.smoothingFactor,
+                    settings.partingSurfaceExtension,
+                    settings.preferPlanarSurface,
+                    settings.nonPlanarDeviationRatio, nullptr);
+            }
         }
-        result.maxContour = identifyMaxContour(result.partingLine, result.demold.direction);
         result.split = splitMesh(result.cleanedMesh, result.demold.direction);
         std::vector<CoreRegion> undercutRegions = detectCoreRegions(result.cleanedMesh,
             result.demold.direction,
