@@ -40,6 +40,8 @@ namespace casting {
         // value keeps grouping stable for very thin parts.
         constexpr double kSectionClusteringToleranceRatio = 0.05;
         constexpr double kMinSectionClusteringTolerance = 1e-4;
+        constexpr double kSplitPlaneContainmentTolerance = 1e-6;
+        constexpr double kSplitPlaneMinThicknessRatio = 1e-3;
 
         double degreesToRadians(double degrees) {
             return degrees * kPi / 180.0;
@@ -1236,12 +1238,19 @@ namespace casting {
             }
             PlaneBasis basis = buildPlaneBasis(planeOrigin, direction);
             Bounds partLocalBounds = computeLocalBounds(mesh, basis);
-            // 若分型面平面落在零件外部，沿脱模方向将其拉回零件内部。
-            if (partLocalBounds.min.z > 0.0 || partLocalBounds.max.z < 0.0) {
+            double partThickness = std::max(0.0, partLocalBounds.max.z - partLocalBounds.min.z);
+            double splitContainmentTolerance = std::max(kSplitPlaneContainmentTolerance,
+                partThickness * kSplitPlaneMinThicknessRatio);
+            // 若分型面平面落在零件外部（含容差），沿脱模方向将其拉回零件内部。
+            if (partLocalBounds.min.z > splitContainmentTolerance ||
+                partLocalBounds.max.z < -splitContainmentTolerance) {
                 double shift = (partLocalBounds.min.z + partLocalBounds.max.z) * 0.5;
                 planeOrigin = planeOrigin + basis.normal * shift;
                 basis = buildPlaneBasis(planeOrigin, direction);
                 partLocalBounds = computeLocalBounds(mesh, basis);
+                partThickness = std::max(0.0, partLocalBounds.max.z - partLocalBounds.min.z);
+                splitContainmentTolerance = std::max(kSplitPlaneContainmentTolerance,
+                    partThickness * kSplitPlaneMinThicknessRatio);
             }
             Bounds blankLocalBounds = expandLocalBounds(partLocalBounds, settings.moldBlankPadding);
 
@@ -1256,6 +1265,14 @@ namespace casting {
 
             // 3) 以分型面所在平面切分毛坯，得到上下型
             double splitCoordinate = 0.0;
+            double splitLowerLimit = partLocalBounds.min.z + splitContainmentTolerance;
+            double splitUpperLimit = partLocalBounds.max.z - splitContainmentTolerance;
+            if (splitLowerLimit <= splitUpperLimit) {
+                splitCoordinate = std::clamp(splitCoordinate, splitLowerLimit, splitUpperLimit);
+            }
+            else {
+                splitCoordinate = (partLocalBounds.min.z + partLocalBounds.max.z) * 0.5;
+            }
             Bounds upperBlankLocal = blankLocalBounds;
             Bounds lowerBlankLocal = blankLocalBounds;
             upperBlankLocal.min.z = std::max(upperBlankLocal.min.z, splitCoordinate);
