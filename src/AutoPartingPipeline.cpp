@@ -35,6 +35,11 @@ namespace casting {
         constexpr double kStrategyObstaclePenalty = 0.2;
         constexpr double kStrategyCorePenalty = 0.1;
         constexpr double kStrategyCorePreferencePenalty = 0.05;
+        // Section clustering tolerance for grouping parting-line points by local z.
+        // The ratio scales with part thickness along demold direction; the minimum
+        // value keeps grouping stable for very thin parts.
+        constexpr double kSectionClusteringToleranceRatio = 0.05;
+        constexpr double kMinSectionClusteringTolerance = 1e-4;
 
         double degreesToRadians(double degrees) {
             return degrees * kPi / 180.0;
@@ -732,7 +737,8 @@ namespace casting {
             }
 
             double wRange = maxW - minW;
-            double sectionTolerance = std::max(kClosureTolerance, wRange * 0.05);
+            double sectionTolerance = std::max(kMinSectionClusteringTolerance,
+                wRange * kSectionClusteringToleranceRatio);
             std::vector<SectionCluster> clusters;
             for (const auto& local : localPoints) {
                 bool assigned = false;
