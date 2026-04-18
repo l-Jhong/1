@@ -45,6 +45,11 @@ int main() {
     std::cout << "Separability: " << (result.separability.separable ? "separable" : "not separable")
               << " | Obstacles: " << result.separability.obstacles.size() << "\n";
     std::cout << "Max contour area: " << result.maxContour.area << "\n";
+    std::cout << "Max contour source: "
+              << (result.maxContour.selectedFromSlice ? "slice" : "fallback")
+              << " | Slice index: " << result.maxContour.selectedSliceIndex
+              << " | Local W: " << result.maxContour.selectedSliceW
+              << " | Fallback used: " << (result.maxContour.fallbackUsed ? "yes" : "no") << "\n";
     std::cout << "Mold blocks: " << result.moldAssembly.blocks.size() << "\n";
     std::cout << "Core inserts: " << result.moldAssembly.cores.size() << "\n";
     std::cout << "Interference issues: " << result.issues.size() << "\n";

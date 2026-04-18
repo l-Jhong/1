@@ -528,6 +528,14 @@ void MyClass::do_it() {
            << " | Max contour area: " << result.maxContour.area;
     print(stream.str());
 
+    stream.str("");
+    stream.clear();
+    stream << "Contour source: " << (result.maxContour.selectedFromSlice ? "slice" : "fallback")
+           << " | Slice index: " << result.maxContour.selectedSliceIndex
+           << " | Local W: " << result.maxContour.selectedSliceW
+           << " | Fallback used: " << (result.maxContour.fallbackUsed ? "yes" : "no");
+    print(stream.str());
+
     highlightPartingSurface(result.partingSurface.boundary);
     showMoldAssembly(result.moldAssembly);
 }

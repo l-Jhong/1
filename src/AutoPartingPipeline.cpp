@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -42,6 +43,10 @@ namespace casting {
         constexpr double kMinSectionClusteringTolerance = 1e-4;
         constexpr double kSplitPlaneContainmentTolerance = 1e-6;
         constexpr double kSplitPlaneMinThicknessRatio = 1e-3;
+        constexpr std::size_t kContourSliceCount = 33;
+        constexpr double kSliceTieAreaRatio = 0.03;
+        constexpr double kSliceAreaEpsilon = 1e-8;
+        constexpr double kSliceIntersectionTolerance = 1e-8;
 
         double degreesToRadians(double degrees) {
             return degrees * kPi / 180.0;
@@ -363,6 +368,24 @@ namespace casting {
                 area += a.x * b.y - b.x * a.y;
             }
             return std::abs(area) * 0.5;
+        }
+
+        std::vector<Vector2> deduplicatePoints2D(const std::vector<Vector2>& points, double tolerance) {
+            std::vector<Vector2> unique;
+            unique.reserve(points.size());
+            for (const auto& point : points) {
+                bool duplicated = false;
+                for (const auto& existing : unique) {
+                    if (distance2D(point, existing) <= tolerance) {
+                        duplicated = true;
+                        break;
+                    }
+                }
+                if (!duplicated) {
+                    unique.push_back(point);
+                }
+            }
+            return unique;
         }
 
         Mesh preprocessMesh(const Mesh& input, double minArea) {
@@ -709,86 +732,237 @@ namespace casting {
             return surface;
         }
 
-        ContourFace identifyMaxContour(const PartingLine& line, const Vector3& direction) {
+        ContourFace identifyMaxContour(const Mesh& mesh, const PartingLine& line, const Vector3& direction) {
             ContourFace contour;
-            if (line.points.size() < 3) {
-                return contour;
-            }
-
             Vector3 basisOrigin{};
-            for (const auto& point : line.points) {
-                basisOrigin += point;
+            if (!line.points.empty()) {
+                for (const auto& point : line.points) {
+                    basisOrigin += point;
+                }
+                basisOrigin = basisOrigin / static_cast<double>(line.points.size());
             }
-            basisOrigin = basisOrigin / static_cast<double>(line.points.size());
+            else {
+                basisOrigin = computeCentroid(mesh);
+            }
             PlaneBasis basis = buildPlaneBasis(basisOrigin, direction);
 
-            struct SectionCluster {
-                std::vector<Vector2> uv;
-                double sumW = 0.0;
-            };
-
-            std::vector<Vector3> localPoints;
-            localPoints.reserve(line.points.size());
+            std::vector<Vector3> localVertices;
+            localVertices.reserve(mesh.vertices.size());
             double minW = std::numeric_limits<double>::max();
             double maxW = std::numeric_limits<double>::lowest();
-            for (const auto& point : line.points) {
+            for (const auto& point : mesh.vertices) {
                 Vector3 local = projectToBasis(point, basis);
-                localPoints.push_back(local);
+                localVertices.push_back(local);
                 minW = std::min(minW, local.z);
                 maxW = std::max(maxW, local.z);
             }
 
-            double wRange = maxW - minW;
-            double sectionTolerance = std::max(kMinSectionClusteringTolerance,
-                wRange * kSectionClusteringToleranceRatio);
-            std::vector<SectionCluster> clusters;
-            for (const auto& local : localPoints) {
-                bool assigned = false;
-                for (auto& cluster : clusters) {
-                    double meanW = cluster.uv.empty() ? local.z : (cluster.sumW / static_cast<double>(cluster.uv.size()));
-                    if (std::abs(local.z - meanW) <= sectionTolerance) {
-                        cluster.uv.push_back({ local.x, local.y });
-                        cluster.sumW += local.z;
-                        assigned = true;
-                        break;
-                    }
-                }
-                if (!assigned) {
-                    SectionCluster cluster;
-                    cluster.uv.push_back({ local.x, local.y });
-                    cluster.sumW = local.z;
-                    clusters.push_back(cluster);
-                }
+            if (localVertices.empty()) {
+                return contour;
             }
 
             std::vector<Vector2> bestHull;
             double bestArea = 0.0;
-            double bestW = 0.0;
-            for (const auto& cluster : clusters) {
-                if (cluster.uv.size() < 3) {
-                    continue;
+            double bestW = (minW + maxW) * 0.5;
+
+            struct SliceCandidate {
+                std::vector<Vector2> hull;
+                double area = 0.0;
+                double w = 0.0;
+                double balance = std::numeric_limits<double>::max();
+                int index = -1;
+            };
+
+            auto collectSliceCandidate = [&](double w, int index, SliceCandidate* out) -> bool {
+                if (!out) {
+                    return false;
                 }
-                std::vector<Vector2> hull = computeConvexHull2D(cluster.uv);
+                std::vector<Vector2> intersections;
+                intersections.reserve(mesh.triangles.size() * 2);
+                for (const auto& triangle : mesh.triangles) {
+                    const Vector3& a = localVertices.at(triangle.v0);
+                    const Vector3& b = localVertices.at(triangle.v1);
+                    const Vector3& c = localVertices.at(triangle.v2);
+                    std::array<std::pair<Vector3, Vector3>, 3> edges = {
+                        std::make_pair(a, b),
+                        std::make_pair(b, c),
+                        std::make_pair(c, a)
+                    };
+                    for (const auto& edge : edges) {
+                        const Vector3& p0 = edge.first;
+                        const Vector3& p1 = edge.second;
+                        double d0 = p0.z - w;
+                        double d1 = p1.z - w;
+                        bool on0 = std::abs(d0) <= kSliceIntersectionTolerance;
+                        bool on1 = std::abs(d1) <= kSliceIntersectionTolerance;
+                        if (on0 && on1) {
+                            intersections.push_back({ p0.x, p0.y });
+                            intersections.push_back({ p1.x, p1.y });
+                            continue;
+                        }
+                        if (on0) {
+                            intersections.push_back({ p0.x, p0.y });
+                            continue;
+                        }
+                        if (on1) {
+                            intersections.push_back({ p1.x, p1.y });
+                            continue;
+                        }
+                        if ((d0 < 0.0 && d1 > 0.0) || (d0 > 0.0 && d1 < 0.0)) {
+                            double t = d0 / (d0 - d1);
+                            intersections.push_back({
+                                p0.x + (p1.x - p0.x) * t,
+                                p0.y + (p1.y - p0.y) * t
+                                });
+                        }
+                    }
+                }
+                intersections = deduplicatePoints2D(intersections, kSliceIntersectionTolerance * 10.0);
+                if (intersections.size() < 3) {
+                    return false;
+                }
+                std::vector<Vector2> hull = computeConvexHull2D(intersections);
                 if (hull.size() < 3) {
-                    continue;
+                    return false;
+                }
+                std::vector<Vector2> closed = closeLoop2D(hull);
+                if (hasSelfIntersection2D(closed)) {
+                    return false;
                 }
                 double area = polygonArea2D(hull);
-                if (area > bestArea) {
-                    bestArea = area;
-                    bestHull = std::move(hull);
-                    bestW = cluster.sumW / static_cast<double>(cluster.uv.size());
+                if (area <= kSliceAreaEpsilon) {
+                    return false;
+                }
+                std::size_t upperCount = 0;
+                std::size_t lowerCount = 0;
+                for (const auto& vertex : localVertices) {
+                    if (vertex.z >= w) {
+                        ++upperCount;
+                    }
+                    else {
+                        ++lowerCount;
+                    }
+                }
+                out->hull = std::move(hull);
+                out->area = area;
+                out->w = w;
+                out->index = index;
+                out->balance = std::abs(static_cast<double>(upperCount) - static_cast<double>(lowerCount));
+                return true;
+            };
+
+            if (mesh.triangles.size() >= 3 &&
+                (maxW - minW) > std::numeric_limits<double>::epsilon()) {
+                double midW = (minW + maxW) * 0.5;
+                SliceCandidate bestSlice;
+                bool hasSlice = false;
+                for (std::size_t i = 0; i < kContourSliceCount; ++i) {
+                    double ratio = (kContourSliceCount == 1)
+                        ? 0.0
+                        : static_cast<double>(i) / static_cast<double>(kContourSliceCount - 1);
+                    double w = minW + (maxW - minW) * ratio;
+                    SliceCandidate candidate;
+                    if (!collectSliceCandidate(w, static_cast<int>(i), &candidate)) {
+                        continue;
+                    }
+                    if (!hasSlice) {
+                        bestSlice = std::move(candidate);
+                        hasSlice = true;
+                        continue;
+                    }
+                    double areaTolerance =
+                        std::max(bestSlice.area, candidate.area) * kSliceTieAreaRatio;
+                    if (candidate.area > bestSlice.area + areaTolerance) {
+                        bestSlice = std::move(candidate);
+                        continue;
+                    }
+                    if (std::abs(candidate.area - bestSlice.area) <= areaTolerance) {
+                        double candidateMidDist = std::abs(candidate.w - midW);
+                        double bestMidDist = std::abs(bestSlice.w - midW);
+                        if (candidateMidDist < bestMidDist - kSliceIntersectionTolerance) {
+                            bestSlice = std::move(candidate);
+                            continue;
+                        }
+                        if (std::abs(candidateMidDist - bestMidDist) <= kSliceIntersectionTolerance &&
+                            candidate.balance < bestSlice.balance) {
+                            bestSlice = std::move(candidate);
+                        }
+                    }
+                }
+                if (hasSlice) {
+                    bestHull = bestSlice.hull;
+                    bestArea = bestSlice.area;
+                    bestW = std::clamp(bestSlice.w, minW, maxW);
+                    contour.selectedFromSlice = true;
+                    contour.selectedSliceIndex = bestSlice.index;
+                    contour.selectedSliceW = bestW;
                 }
             }
 
             if (bestHull.empty()) {
-                std::vector<Vector2> projected;
-                projected.reserve(line.points.size());
-                for (const auto& point : line.points) {
-                    projected.push_back(projectToPlane(point, basis));
+                contour.fallbackUsed = true;
+                if (line.points.size() >= 3) {
+                    struct SectionCluster {
+                        std::vector<Vector2> uv;
+                        double sumW = 0.0;
+                    };
+
+                    std::vector<Vector3> localPoints;
+                    localPoints.reserve(line.points.size());
+                    for (const auto& point : line.points) {
+                        localPoints.push_back(projectToBasis(point, basis));
+                    }
+
+                    double wRange = maxW - minW;
+                    double sectionTolerance = std::max(kMinSectionClusteringTolerance,
+                        wRange * kSectionClusteringToleranceRatio);
+                    std::vector<SectionCluster> clusters;
+                    for (const auto& local : localPoints) {
+                        bool assigned = false;
+                        for (auto& cluster : clusters) {
+                            double meanW = cluster.uv.empty()
+                                ? local.z
+                                : (cluster.sumW / static_cast<double>(cluster.uv.size()));
+                            if (std::abs(local.z - meanW) <= sectionTolerance) {
+                                cluster.uv.push_back({ local.x, local.y });
+                                cluster.sumW += local.z;
+                                assigned = true;
+                                break;
+                            }
+                        }
+                        if (!assigned) {
+                            SectionCluster cluster;
+                            cluster.uv.push_back({ local.x, local.y });
+                            cluster.sumW = local.z;
+                            clusters.push_back(cluster);
+                        }
+                    }
+
+                    for (const auto& cluster : clusters) {
+                        if (cluster.uv.size() < 3) {
+                            continue;
+                        }
+                        std::vector<Vector2> hull = computeConvexHull2D(cluster.uv);
+                        if (hull.size() < 3) {
+                            continue;
+                        }
+                        double area = polygonArea2D(hull);
+                        if (area > bestArea) {
+                            bestArea = area;
+                            bestHull = std::move(hull);
+                            bestW = cluster.sumW / static_cast<double>(cluster.uv.size());
+                        }
+                    }
                 }
-                bestHull = computeConvexHull2D(projected);
-                bestArea = polygonArea2D(bestHull);
-                bestW = 0.0;
+
+                if (bestHull.empty()) {
+                    SliceCandidate centerCandidate;
+                    if (collectSliceCandidate((minW + maxW) * 0.5, -1, &centerCandidate)) {
+                        bestHull = centerCandidate.hull;
+                        bestArea = centerCandidate.area;
+                        bestW = centerCandidate.w;
+                    }
+                }
             }
 
             if (bestHull.size() < 3) {
@@ -813,6 +987,7 @@ namespace casting {
             }
             contour.centroid = contour.centroid / static_cast<double>(contour.boundary.size());
             contour.normal = normalized(direction);
+            contour.selectedSliceW = bestW;
             return contour;
         }
 
@@ -1390,7 +1565,7 @@ namespace casting {
         result.partingLine = extractPartingLine(result.cleanedMesh, result.demold.direction);
         // Identify the max contour first: it is the largest cross-section perpendicular to
         // the demold direction and serves as the authoritative reference for the parting surface.
-        result.maxContour = identifyMaxContour(result.partingLine, result.demold.direction);
+        result.maxContour = identifyMaxContour(result.cleanedMesh, result.partingLine, result.demold.direction);
         // Build the parting surface from the max contour so it is a flat plane perpendicular
         // to the demold direction.  Fall back to the original approach if the contour is
         // degenerate (fewer than 3 boundary points).

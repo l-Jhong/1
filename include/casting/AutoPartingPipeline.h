@@ -72,6 +72,10 @@ struct ContourFace {
     Vector3 normal{};
     Vector3 centroid{};
     double area{};
+    bool selectedFromSlice = false;
+    int selectedSliceIndex = -1;
+    double selectedSliceW = 0.0;
+    bool fallbackUsed = false;
 };
 
 struct MoldBlock {
