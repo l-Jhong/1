@@ -46,6 +46,17 @@ using std::cerr;
 
 namespace {
 
+NXOpen::Part* resolveWorkPart(BasePart* workPart) {
+    if (NXOpen::Part* part = dynamic_cast<NXOpen::Part*>(workPart)) {
+        return part;
+    }
+    NXOpen::Session* session = NXOpen::Session::GetSession();
+    if (!session || !session->Parts()) {
+        return nullptr;
+    }
+    return session->Parts()->Work();
+}
+
 casting::Mesh buildDemoMesh(double size) {
     double h = size / 2.0;
     casting::Mesh mesh;
@@ -127,7 +138,7 @@ casting::Mesh buildMeshFromWorkPart(BasePart* workPart,
     }
 
     // 读取当前工作部件的体，生成用于分析的网格
-    NXOpen::Part* part = dynamic_cast<NXOpen::Part*>(workPart);
+    NXOpen::Part* part = resolveWorkPart(workPart);
     if (!part) {
         return mesh;
     }
@@ -338,17 +349,22 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
 
     // 按收缩率放大的零件型腔（cavityBounds）从上下模坯料中布尔减去，得到实际铸型。
     // 统一通过 NXOpen Boolean Builder：目标体 + 工具体 + 操作类型（Subtract）。
+    NXOpen::Part* part = resolveWorkPart(workPart);
+    if (!part) {
+        return;
+    }
+
     if (assembly.blocks[0].subtractPart) {
         NXOpen::Body* upperCavity = createBlock(assembly.blocks[0].cavityBounds, 0);
         if (upperCavity) {
-            applyBooleanFeature(dynamic_cast<NXOpen::Part*>(workPart), upperBody, upperCavity,
+            applyBooleanFeature(part, upperBody, upperCavity,
                                 NXOpen::Features::Feature::BooleanTypeSubtract);
         }
     }
     if (assembly.blocks[1].subtractPart) {
         NXOpen::Body* lowerCavity = createBlock(assembly.blocks[1].cavityBounds, 0);
         if (lowerCavity) {
-            applyBooleanFeature(dynamic_cast<NXOpen::Part*>(workPart), lowerBody, lowerCavity,
+            applyBooleanFeature(part, lowerBody, lowerCavity,
                                 NXOpen::Features::Feature::BooleanTypeSubtract);
         }
     }

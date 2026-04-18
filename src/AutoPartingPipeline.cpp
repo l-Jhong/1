@@ -1160,6 +1160,13 @@ namespace casting {
             }
             PlaneBasis basis = buildPlaneBasis(planeOrigin, direction);
             Bounds partLocalBounds = computeLocalBounds(mesh, basis);
+            // 若分型面平面落在零件外部，沿脱模方向将其拉回零件内部。
+            if (partLocalBounds.min.z > 0.0 || partLocalBounds.max.z < 0.0) {
+                double shift = (partLocalBounds.min.z + partLocalBounds.max.z) * 0.5;
+                planeOrigin = planeOrigin + basis.normal * shift;
+                basis = buildPlaneBasis(planeOrigin, direction);
+                partLocalBounds = computeLocalBounds(mesh, basis);
+            }
             Bounds blankLocalBounds = expandLocalBounds(partLocalBounds, settings.moldBlankPadding);
 
             // 2) 按收缩率放大产品模型，用于型腔减料。
