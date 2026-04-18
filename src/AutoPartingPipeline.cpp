@@ -707,24 +707,89 @@ namespace casting {
             if (line.points.size() < 3) {
                 return contour;
             }
-            Vector3 centroid{};
+
+            Vector3 basisOrigin{};
             for (const auto& point : line.points) {
-                centroid += point;
+                basisOrigin += point;
             }
-            centroid = centroid / static_cast<double>(line.points.size());
-            PlaneBasis basis = buildPlaneBasis(centroid, direction);
-            std::vector<Vector2> projected;
-            projected.reserve(line.points.size());
+            basisOrigin = basisOrigin / static_cast<double>(line.points.size());
+            PlaneBasis basis = buildPlaneBasis(basisOrigin, direction);
+
+            struct SectionCluster {
+                std::vector<Vector2> uv;
+                double sumW = 0.0;
+            };
+
+            std::vector<Vector3> localPoints;
+            localPoints.reserve(line.points.size());
+            double minW = std::numeric_limits<double>::max();
+            double maxW = std::numeric_limits<double>::lowest();
             for (const auto& point : line.points) {
-                projected.push_back(projectToPlane(point, basis));
+                Vector3 local = projectToBasis(point, basis);
+                localPoints.push_back(local);
+                minW = std::min(minW, local.z);
+                maxW = std::max(maxW, local.z);
             }
-            std::vector<Vector2> hull = computeConvexHull2D(projected);
-            if (hull.size() < 3) {
+
+            double wRange = maxW - minW;
+            double sectionTolerance = std::max(kClosureTolerance, wRange * 0.05);
+            std::vector<SectionCluster> clusters;
+            for (const auto& local : localPoints) {
+                bool assigned = false;
+                for (auto& cluster : clusters) {
+                    double meanW = cluster.uv.empty() ? local.z : (cluster.sumW / static_cast<double>(cluster.uv.size()));
+                    if (std::abs(local.z - meanW) <= sectionTolerance) {
+                        cluster.uv.push_back({ local.x, local.y });
+                        cluster.sumW += local.z;
+                        assigned = true;
+                        break;
+                    }
+                }
+                if (!assigned) {
+                    SectionCluster cluster;
+                    cluster.uv.push_back({ local.x, local.y });
+                    cluster.sumW = local.z;
+                    clusters.push_back(cluster);
+                }
+            }
+
+            std::vector<Vector2> bestHull;
+            double bestArea = 0.0;
+            double bestW = 0.0;
+            for (const auto& cluster : clusters) {
+                if (cluster.uv.size() < 3) {
+                    continue;
+                }
+                std::vector<Vector2> hull = computeConvexHull2D(cluster.uv);
+                if (hull.size() < 3) {
+                    continue;
+                }
+                double area = polygonArea2D(hull);
+                if (area > bestArea) {
+                    bestArea = area;
+                    bestHull = std::move(hull);
+                    bestW = cluster.sumW / static_cast<double>(cluster.uv.size());
+                }
+            }
+
+            if (bestHull.empty()) {
+                std::vector<Vector2> projected;
+                projected.reserve(line.points.size());
+                for (const auto& point : line.points) {
+                    projected.push_back(projectToPlane(point, basis));
+                }
+                bestHull = computeConvexHull2D(projected);
+                bestArea = polygonArea2D(bestHull);
+                bestW = 0.0;
+            }
+
+            if (bestHull.size() < 3) {
                 return contour;
             }
-            contour.boundary.reserve(hull.size() + 1);
-            for (const auto& point : hull) {
-                contour.boundary.push_back(liftFromPlane(point, basis));
+
+            contour.boundary.reserve(bestHull.size() + 1);
+            for (const auto& point : bestHull) {
+                contour.boundary.push_back(liftFromBasis({ point.x, point.y, bestW }, basis));
             }
             if (!contour.boundary.empty()) {
                 Vector3 closureDelta = contour.boundary.front() - contour.boundary.back();
@@ -732,8 +797,13 @@ namespace casting {
                     contour.boundary.push_back(contour.boundary.front());
                 }
             }
-            contour.area = polygonArea2D(hull);
-            contour.centroid = centroid;
+
+            contour.area = bestArea;
+            contour.centroid = {};
+            for (const auto& point : contour.boundary) {
+                contour.centroid += point;
+            }
+            contour.centroid = contour.centroid / static_cast<double>(contour.boundary.size());
             contour.normal = normalized(direction);
             return contour;
         }
