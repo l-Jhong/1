@@ -74,29 +74,28 @@ bool appendBoundingBoxMesh(tag_t bodyTag, casting::Mesh* mesh) {
     if (!mesh) {
         return false;
     }
-    double corner[3]{};
-    double directions[9]{};
-    double distances[3]{};
-    if (UF_MODL_ask_bounding_box(bodyTag, corner, directions, distances) != 0) {
+    double box[6]{};
+    if (UF_MODL_ask_bounding_box(bodyTag, box) != 0) {
         return false;
     }
 
     // 使用体的包围盒尺寸生成简化盒形网格，保证不同零件有不同的输入几何
-    casting::Vector3 origin{corner[0], corner[1], corner[2]};
-    casting::Vector3 axisU{directions[0], directions[1], directions[2]};
-    casting::Vector3 axisV{directions[3], directions[4], directions[5]};
-    casting::Vector3 axisW{directions[6], directions[7], directions[8]};
+    double xmin = box[0];
+    double ymin = box[1];
+    double zmin = box[2];
+    double xmax = box[3];
+    double ymax = box[4];
+    double zmax = box[5];
 
     std::size_t base = mesh->vertices.size();
-    mesh->vertices.push_back(origin);
-    mesh->vertices.push_back(origin + axisU * distances[0]);
-    mesh->vertices.push_back(origin + axisU * distances[0] + axisV * distances[1]);
-    mesh->vertices.push_back(origin + axisV * distances[1]);
-    mesh->vertices.push_back(origin + axisW * distances[2]);
-    mesh->vertices.push_back(origin + axisU * distances[0] + axisW * distances[2]);
-    mesh->vertices.push_back(origin + axisU * distances[0] + axisV * distances[1] +
-                             axisW * distances[2]);
-    mesh->vertices.push_back(origin + axisV * distances[1] + axisW * distances[2]);
+    mesh->vertices.push_back({xmin, ymin, zmin});
+    mesh->vertices.push_back({xmax, ymin, zmin});
+    mesh->vertices.push_back({xmax, ymax, zmin});
+    mesh->vertices.push_back({xmin, ymax, zmin});
+    mesh->vertices.push_back({xmin, ymin, zmax});
+    mesh->vertices.push_back({xmax, ymin, zmax});
+    mesh->vertices.push_back({xmax, ymax, zmax});
+    mesh->vertices.push_back({xmin, ymax, zmax});
 
     mesh->triangles.push_back({base + 0, base + 1, base + 2});
     mesh->triangles.push_back({base + 0, base + 2, base + 3});
@@ -306,10 +305,14 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
             return nullptr;
         }
         double corner[3] = {bounds.min.x, bounds.min.y, bounds.min.z};
-        char edgeString[128]{};
+        char edgeXString[64]{};
+        char edgeYString[64]{};
+        char edgeZString[64]{};
         int precision = std::numeric_limits<double>::max_digits10;
-        std::snprintf(edgeString, sizeof(edgeString), "%.*g,%.*g,%.*g", precision, edgeX,
-                      precision, edgeY, precision, edgeZ);
+        std::snprintf(edgeXString, sizeof(edgeXString), "%.*g", precision, edgeX);
+        std::snprintf(edgeYString, sizeof(edgeYString), "%.*g", precision, edgeY);
+        std::snprintf(edgeZString, sizeof(edgeZString), "%.*g", precision, edgeZ);
+        char* edgeString[3] = {edgeXString, edgeYString, edgeZString};
         tag_t blockTag = NULL_TAG;
         if (UF_MODL_create_block1(UF_POSITIVE, corner, edgeString, &blockTag) == 0 &&
             blockTag != NULL_TAG) {
