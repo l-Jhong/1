@@ -186,7 +186,8 @@ casting::Mesh buildMeshFromWorkPart(BasePart* workPart,
 bool applyBooleanFeature(NXOpen::Part* part,
                          NXOpen::Body* targetBody,
                          NXOpen::Body* toolBody,
-                         NXOpen::Features::Feature::BooleanType operation) {
+                         NXOpen::Features::Feature::BooleanType operation,
+                         bool retainTool = true) {
     if (!part || !targetBody || !toolBody) {
         return false;
     }
@@ -198,7 +199,7 @@ bool applyBooleanFeature(NXOpen::Part* part,
         booleanBuilder->SetTarget(targetBody);
         booleanBuilder->SetTool(toolBody);
         booleanBuilder->SetRetainTarget(false);
-        booleanBuilder->SetRetainTool(false);
+        booleanBuilder->SetRetainTool(retainTool);
         booleanBuilder->CommitFeature();
         booleanBuilder->Destroy();
         return true;
@@ -208,6 +209,24 @@ bool applyBooleanFeature(NXOpen::Part* part,
         }
         return false;
     }
+}
+
+std::vector<tag_t> collectSolidBodyTags(BasePart* workPart) {
+    std::vector<tag_t> tags;
+    NXOpen::Part* part = resolveWorkPart(workPart);
+    if (!part) {
+        return tags;
+    }
+    NXOpen::BodyCollection* bodyCollection = part->Bodies();
+    if (!bodyCollection) {
+        return tags;
+    }
+    for (NXOpen::Body* body : *bodyCollection) {
+        if (body && body->IsSolidBody()) {
+            tags.push_back(body->Tag());
+        }
+    }
+    return tags;
 }
 
 NXOpen::Body* createExtrudedRectangularSolid(const casting::Bounds& bounds, int color) {
@@ -388,6 +407,20 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
     if (!workPart) {
         return;
     }
+    NXOpen::Part* part = resolveWorkPart(workPart);
+    if (!part) {
+        return;
+    }
+    std::vector<tag_t> partSolidTags = collectSolidBodyTags(workPart);
+    std::vector<NXOpen::Body*> partToolBodies;
+    partToolBodies.reserve(partSolidTags.size());
+    for (tag_t bodyTag : partSolidTags) {
+        NXOpen::Body* body = dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(bodyTag));
+        if (body) {
+            partToolBodies.push_back(body);
+        }
+    }
+
     // 通过“矩形轮廓 + 拉伸”生成与包围盒同尺寸的实体；若失败返回 nullptr。
     auto createBlock = [](const casting::Bounds& bounds, int color) -> NXOpen::Body* {
         return createExtrudedRectangularSolid(bounds, color);
@@ -409,23 +442,33 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
 
     // 按收缩率放大的零件型腔（cavityBounds）从上下模坯料中布尔减去，得到实际铸型。
     // 统一通过 NXOpen Boolean Builder：目标体 + 工具体 + 操作类型（Subtract）。
-    NXOpen::Part* part = resolveWorkPart(workPart);
-    if (!part) {
-        return;
-    }
-
-    if (assembly.blocks[0].subtractPart) {
-        NXOpen::Body* upperCavity = createBlock(assembly.blocks[0].cavityBounds, 0);
-        if (upperCavity) {
-            applyBooleanFeature(part, upperBody, upperCavity,
-                                NXOpen::Features::Feature::BooleanTypeSubtract);
+    if (!partToolBodies.empty()) {
+        if (assembly.blocks[0].subtractPart) {
+            for (NXOpen::Body* toolBody : partToolBodies) {
+                applyBooleanFeature(part, upperBody, toolBody,
+                                    NXOpen::Features::Feature::BooleanTypeSubtract, true);
+            }
         }
-    }
-    if (assembly.blocks[1].subtractPart) {
-        NXOpen::Body* lowerCavity = createBlock(assembly.blocks[1].cavityBounds, 0);
-        if (lowerCavity) {
-            applyBooleanFeature(part, lowerBody, lowerCavity,
-                                NXOpen::Features::Feature::BooleanTypeSubtract);
+        if (assembly.blocks[1].subtractPart) {
+            for (NXOpen::Body* toolBody : partToolBodies) {
+                applyBooleanFeature(part, lowerBody, toolBody,
+                                    NXOpen::Features::Feature::BooleanTypeSubtract, true);
+            }
+        }
+    } else {
+        if (assembly.blocks[0].subtractPart) {
+            NXOpen::Body* upperCavity = createBlock(assembly.blocks[0].cavityBounds, 0);
+            if (upperCavity) {
+                applyBooleanFeature(part, upperBody, upperCavity,
+                                    NXOpen::Features::Feature::BooleanTypeSubtract, false);
+            }
+        }
+        if (assembly.blocks[1].subtractPart) {
+            NXOpen::Body* lowerCavity = createBlock(assembly.blocks[1].cavityBounds, 0);
+            if (lowerCavity) {
+                applyBooleanFeature(part, lowerBody, lowerCavity,
+                                    NXOpen::Features::Feature::BooleanTypeSubtract, false);
+            }
         }
     }
 
