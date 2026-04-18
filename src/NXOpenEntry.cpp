@@ -2,6 +2,7 @@
 
 // Mandatory UF Includes
 #include <uf.h>
+#include <uf_curve.h>
 #include <uf_object_types.h>
 #include <uf_modl.h>
 #include <uf_obj.h>
@@ -209,6 +210,76 @@ bool applyBooleanFeature(NXOpen::Part* part,
     }
 }
 
+NXOpen::Body* createExtrudedRectangularSolid(const casting::Bounds& bounds, int color) {
+    double edgeX = bounds.max.x - bounds.min.x;
+    double edgeY = bounds.max.y - bounds.min.y;
+    double edgeZ = bounds.max.z - bounds.min.z;
+    if (edgeX <= 0.0 || edgeY <= 0.0 || edgeZ <= 0.0) {
+        return nullptr;
+    }
+
+    UF_CURVE_line_t edges[4]{};
+    edges[0].start_point[0] = bounds.min.x; edges[0].start_point[1] = bounds.min.y; edges[0].start_point[2] = bounds.min.z;
+    edges[0].end_point[0]   = bounds.max.x; edges[0].end_point[1]   = bounds.min.y; edges[0].end_point[2]   = bounds.min.z;
+    edges[1].start_point[0] = bounds.max.x; edges[1].start_point[1] = bounds.min.y; edges[1].start_point[2] = bounds.min.z;
+    edges[1].end_point[0]   = bounds.max.x; edges[1].end_point[1]   = bounds.max.y; edges[1].end_point[2]   = bounds.min.z;
+    edges[2].start_point[0] = bounds.max.x; edges[2].start_point[1] = bounds.max.y; edges[2].start_point[2] = bounds.min.z;
+    edges[2].end_point[0]   = bounds.min.x; edges[2].end_point[1]   = bounds.max.y; edges[2].end_point[2]   = bounds.min.z;
+    edges[3].start_point[0] = bounds.min.x; edges[3].start_point[1] = bounds.max.y; edges[3].start_point[2] = bounds.min.z;
+    edges[3].end_point[0]   = bounds.min.x; edges[3].end_point[1]   = bounds.min.y; edges[3].end_point[2]   = bounds.min.z;
+
+    tag_t edgeTags[4] = {NULL_TAG, NULL_TAG, NULL_TAG, NULL_TAG};
+    for (int i = 0; i < 4; ++i) {
+        if (UF_CURVE_create_line(&edges[i], &edgeTags[i]) != 0 || edgeTags[i] == NULL_TAG) {
+            for (int j = 0; j < 4; ++j) {
+                if (edgeTags[j] != NULL_TAG) {
+                    UF_OBJ_delete_object(edgeTags[j]);
+                }
+            }
+            return nullptr;
+        }
+    }
+
+    uf_list_p_t sectionList = nullptr;
+    if (UF_MODL_create_list(&sectionList) != 0 || !sectionList) {
+        for (tag_t edgeTag : edgeTags) {
+            UF_OBJ_delete_object(edgeTag);
+        }
+        return nullptr;
+    }
+    for (tag_t edgeTag : edgeTags) {
+        UF_MODL_put_list_item(sectionList, edgeTag);
+    }
+
+    char taperAngle[] = "0";
+    char startLimit[] = "0";
+    char endLimit[64]{};
+    int precision = std::numeric_limits<double>::max_digits10;
+    std::snprintf(endLimit, sizeof(endLimit), "%.*g", precision, edgeZ);
+    char* limits[2] = {startLimit, endLimit};
+    double point[3] = {bounds.min.x, bounds.min.y, bounds.min.z};
+    double direction[3] = {0.0, 0.0, 1.0};
+
+    tag_t featureTag = NULL_TAG;
+    int rc = UF_MODL_create_extruded(sectionList, taperAngle, limits, point, direction,
+                                     UF_NULLSIGN, &featureTag);
+    UF_MODL_delete_list(&sectionList);
+    for (tag_t edgeTag : edgeTags) {
+        UF_OBJ_delete_object(edgeTag);
+    }
+    if (rc != 0 || featureTag == NULL_TAG) {
+        return nullptr;
+    }
+
+    tag_t bodyTag = NULL_TAG;
+    if (UF_MODL_ask_feat_body(featureTag, &bodyTag) != 0 || bodyTag == NULL_TAG) {
+        return nullptr;
+    }
+
+    UF_OBJ_set_color(bodyTag, color);
+    return dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(bodyTag));
+}
+
 }  // namespace
 
 //------------------------------------------------------------------------------
@@ -306,31 +377,9 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
     if (!workPart) {
         return;
     }
-    // 返回创建的块体对象；若任意一维边长 ≤ 0 或 UF_MODL_create_block1 调用失败，则返回 nullptr。
-    // 调用方须在执行布尔运算前检查返回值，避免对无效体进行操作。
+    // 通过“矩形轮廓 + 拉伸”生成与包围盒同尺寸的实体；若失败返回 nullptr。
     auto createBlock = [](const casting::Bounds& bounds, int color) -> NXOpen::Body* {
-        double edgeX = bounds.max.x - bounds.min.x;
-        double edgeY = bounds.max.y - bounds.min.y;
-        double edgeZ = bounds.max.z - bounds.min.z;
-        if (edgeX <= 0.0 || edgeY <= 0.0 || edgeZ <= 0.0) {
-            return nullptr;
-        }
-        double corner[3] = {bounds.min.x, bounds.min.y, bounds.min.z};
-        char edgeXString[64]{};
-        char edgeYString[64]{};
-        char edgeZString[64]{};
-        int precision = std::numeric_limits<double>::max_digits10;
-        std::snprintf(edgeXString, sizeof(edgeXString), "%.*g", precision, edgeX);
-        std::snprintf(edgeYString, sizeof(edgeYString), "%.*g", precision, edgeY);
-        std::snprintf(edgeZString, sizeof(edgeZString), "%.*g", precision, edgeZ);
-        char* edgeString[3] = {edgeXString, edgeYString, edgeZString};
-        tag_t blockTag = NULL_TAG;
-        if (UF_MODL_create_block1(UF_POSITIVE, corner, edgeString, &blockTag) == 0 &&
-            blockTag != NULL_TAG) {
-            UF_OBJ_set_color(blockTag, color);
-            return dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(blockTag));
-        }
-        return nullptr;
+        return createExtrudedRectangularSolid(bounds, color);
     };
 
     // 使用不同颜色展示上、下模（仅显示，不输出文件）
