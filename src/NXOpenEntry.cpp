@@ -22,10 +22,13 @@
 #include <NXOpen/Line.hxx>
 #include <NXOpen/NXException.hxx>
 #include <NXOpen/NXObject.hxx>
+#include <NXOpen/NXObjectManager.hxx>
 #include <NXOpen/Part.hxx>
 #include <NXOpen/PartCollection.hxx>
 #include <NXOpen/Point3d.hxx>
 #include <NXOpen/Session.hxx>
+#include <NXOpen/Features_BooleanBuilder.hxx>
+#include <NXOpen/Features_FeatureCollection.hxx>
 
 // Std C++ Includes
 #include <cstdio>
@@ -130,11 +133,13 @@ casting::Mesh buildMeshFromWorkPart(BasePart* workPart,
         return mesh;
     }
     NXOpen::BodyCollection* bodyCollection = part->Bodies();
-    int bodyCount = bodyCollection ? bodyCollection->GetCount() : 0;
+    if (!bodyCollection) {
+        return mesh;
+    }
 
     // 第一遍：仅处理实体（solid body）
-    for (int index = 0; index < bodyCount; ++index) {
-        NXOpen::Body* body = bodyCollection->GetItem(index);
+    std::vector<NXOpen::Body*> sheetBodies;
+    for (NXOpen::Body* body : *bodyCollection) {
         if (!body) {
             continue;
         }
@@ -143,14 +148,14 @@ casting::Mesh buildMeshFromWorkPart(BasePart* workPart,
             appendBoundingBoxMesh(body->Tag(), &mesh);
         } else {
             if (outSheetCount) (*outSheetCount)++;
+            sheetBodies.push_back(body);
         }
     }
 
     // 第二遍：若无实体，回退到所有体（面片体，来自 STEP/STL 等中间格式）
     if (mesh.triangles.empty()) {
-        for (int index = 0; index < bodyCount; ++index) {
-            NXOpen::Body* body = bodyCollection->GetItem(index);
-            if (!body || body->IsSolidBody()) {
+        for (NXOpen::Body* body : sheetBodies) {
+            if (!body) {
                 continue;
             }
             appendBoundingBoxMesh(body->Tag(), &mesh);
@@ -165,6 +170,33 @@ casting::Mesh buildMeshFromWorkPart(BasePart* workPart,
         mesh = buildDemoMesh(10.0);
     }
     return mesh;
+}
+
+bool applyBooleanFeature(NXOpen::Part* part,
+                         NXOpen::Body* targetBody,
+                         NXOpen::Body* toolBody,
+                         NXOpen::Features::Feature::BooleanType operation) {
+    if (!part || !targetBody || !toolBody) {
+        return false;
+    }
+
+    NXOpen::Features::BooleanBuilder* booleanBuilder = nullptr;
+    try {
+        booleanBuilder = part->Features()->CreateBooleanBuilder(nullptr);
+        booleanBuilder->SetOperation(operation);
+        booleanBuilder->SetTarget(targetBody);
+        booleanBuilder->SetTool(toolBody);
+        booleanBuilder->SetRetainTarget(false);
+        booleanBuilder->SetRetainTool(false);
+        booleanBuilder->CommitFeature();
+        booleanBuilder->Destroy();
+        return true;
+    } catch (...) {
+        if (booleanBuilder) {
+            booleanBuilder->Destroy();
+        }
+        return false;
+    }
 }
 
 }  // namespace
@@ -264,14 +296,14 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
     if (!workPart) {
         return;
     }
-    // 返回创建的块体 tag；若任意一维边长 ≤ 0 或 UF_MODL_create_block1 调用失败，则返回 NULL_TAG。
+    // 返回创建的块体对象；若任意一维边长 ≤ 0 或 UF_MODL_create_block1 调用失败，则返回 nullptr。
     // 调用方须在执行布尔运算前检查返回值，避免对无效体进行操作。
-    auto createBlock = [](const casting::Bounds& bounds, int color) -> tag_t {
+    auto createBlock = [](const casting::Bounds& bounds, int color) -> NXOpen::Body* {
         double edgeX = bounds.max.x - bounds.min.x;
         double edgeY = bounds.max.y - bounds.min.y;
         double edgeZ = bounds.max.z - bounds.min.z;
         if (edgeX <= 0.0 || edgeY <= 0.0 || edgeZ <= 0.0) {
-            return NULL_TAG;
+            return nullptr;
         }
         double corner[3] = {bounds.min.x, bounds.min.y, bounds.min.z};
         char edgeString[128]{};
@@ -282,38 +314,39 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
         if (UF_MODL_create_block1(UF_POSITIVE, corner, edgeString, &blockTag) == 0 &&
             blockTag != NULL_TAG) {
             UF_OBJ_set_color(blockTag, color);
+            return dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(blockTag));
         }
-        return blockTag;
+        return nullptr;
     };
 
     // 使用不同颜色展示上、下模（仅显示，不输出文件）
     // 只有在包围盒成功生成后，才可对该 tag 进行后续布尔运算
-    tag_t upperTag = NULL_TAG;
-    tag_t lowerTag = NULL_TAG;
+    NXOpen::Body* upperBody = nullptr;
+    NXOpen::Body* lowerBody = nullptr;
     if (assembly.blocks.size() >= 2) {
-        upperTag = createBlock(assembly.blocks[0].bounds, casting::kUpperMoldColor);
-        lowerTag = createBlock(assembly.blocks[1].bounds, casting::kLowerMoldColor);
+        upperBody = createBlock(assembly.blocks[0].bounds, casting::kUpperMoldColor);
+        lowerBody = createBlock(assembly.blocks[1].bounds, casting::kLowerMoldColor);
     }
 
     // 仅在上下模包围盒均已成功生成的前提下，才创建砂芯几何（避免对空体执行布尔运算）
-    if (upperTag == NULL_TAG || lowerTag == NULL_TAG) {
+    if (!upperBody || !lowerBody) {
         return;
     }
 
     // 按收缩率放大的零件型腔（cavityBounds）从上下模坯料中布尔减去，得到实际铸型。
-    // UF_MODL_boolean 参数：operation=2（减），keep_tool=0（减完后销毁工具体）。
+    // 统一通过 NXOpen Boolean Builder：目标体 + 工具体 + 操作类型（Subtract）。
     if (assembly.blocks[0].subtractPart) {
-        tag_t upperCavity = createBlock(assembly.blocks[0].cavityBounds, 0);
-        if (upperCavity != NULL_TAG) {
-            tag_t boolResult = NULL_TAG;
-            UF_MODL_boolean(2, 0, upperTag, 1, &upperCavity, &boolResult);
+        NXOpen::Body* upperCavity = createBlock(assembly.blocks[0].cavityBounds, 0);
+        if (upperCavity) {
+            applyBooleanFeature(dynamic_cast<NXOpen::Part*>(workPart), upperBody, upperCavity,
+                                NXOpen::Features::Feature::BooleanTypeSubtract);
         }
     }
     if (assembly.blocks[1].subtractPart) {
-        tag_t lowerCavity = createBlock(assembly.blocks[1].cavityBounds, 0);
-        if (lowerCavity != NULL_TAG) {
-            tag_t boolResult = NULL_TAG;
-            UF_MODL_boolean(2, 0, lowerTag, 1, &lowerCavity, &boolResult);
+        NXOpen::Body* lowerCavity = createBlock(assembly.blocks[1].cavityBounds, 0);
+        if (lowerCavity) {
+            applyBooleanFeature(dynamic_cast<NXOpen::Part*>(workPart), lowerBody, lowerCavity,
+                                NXOpen::Features::Feature::BooleanTypeSubtract);
         }
     }
 
