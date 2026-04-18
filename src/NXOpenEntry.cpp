@@ -260,19 +260,30 @@ NXOpen::Body* createExtrudedRectangularSolid(const casting::Bounds& bounds, int 
     double point[3] = {bounds.min.x, bounds.min.y, bounds.min.z};
     double direction[3] = {0.0, 0.0, 1.0};
 
-    tag_t featureTag = NULL_TAG;
+    uf_list_p_t createdObjects = nullptr;
     int rc = UF_MODL_create_extruded(sectionList, taperAngle, limits, point, direction,
-                                     UF_NULLSIGN, &featureTag);
+                                     UF_NULLSIGN, &createdObjects);
     UF_MODL_delete_list(&sectionList);
     for (tag_t edgeTag : edgeTags) {
         UF_OBJ_delete_object(edgeTag);
     }
-    if (rc != 0 || featureTag == NULL_TAG) {
+    if (rc != 0 || !createdObjects) {
+        return nullptr;
+    }
+
+    tag_t createdTag = NULL_TAG;
+    if (UF_MODL_ask_list_item(createdObjects, 0, &createdTag) != 0 || createdTag == NULL_TAG) {
+        UF_MODL_delete_list(&createdObjects);
         return nullptr;
     }
 
     tag_t bodyTag = NULL_TAG;
-    if (UF_MODL_ask_feat_body(featureTag, &bodyTag) != 0 || bodyTag == NULL_TAG) {
+    if (UF_MODL_ask_feat_body(createdTag, &bodyTag) != 0 || bodyTag == NULL_TAG) {
+        bodyTag = createdTag;
+    }
+
+    UF_MODL_delete_list(&createdObjects);
+    if (bodyTag == NULL_TAG) {
         return nullptr;
     }
 
