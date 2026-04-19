@@ -528,49 +528,48 @@ void MyClass::do_it() {
 
     // 打印体类型统计，帮助用户确认当前零件的几何状态
     stringstream bodyStats;
-    bodyStats << "Body stats — Solid: " << solidCount << " | Sheet: " << sheetCount;
+    bodyStats << "体统计 — 实体: " << solidCount << " | 片体: " << sheetCount;
     print(bodyStats.str());
 
     // 若当前零件只含面片体（来自 STEP/STL 等中间格式），给出友好提示
     if (usedSheetBodies) {
-        print("Warning: no solid bodies found. Analysis is running on sheet bodies "
-              "(imported from STEP/STL). For full mold operations, please convert "
-              "them to solids using the Sew or Thicken command first.");
+        print("警告：未找到实体体，当前将在片体上执行分析（来自 STEP/STL）。"
+              "如需完整模具操作，请先使用缝合或加厚命令将其转换为实体。");
     }
 
     casting::AutoPartingResult result = pipeline.run(mesh);
 
     stringstream stream;
-    stream << "Demold direction: (" << result.demold.direction.x << ", "
+    stream << "脱模方向: (" << result.demold.direction.x << ", "
            << result.demold.direction.y << ", " << result.demold.direction.z << ")";
     print(stream.str());
 
     stream.str("");
     stream.clear();
-    stream << "Visibility ratio: " << result.demold.visibilityRatio
-           << " | Undercut ratio: " << result.demold.undercutRatio;
+    stream << "可见性比例: " << result.demold.visibilityRatio
+           << " | 倒扣比例: " << result.demold.undercutRatio;
     print(stream.str());
 
     stream.str("");
     stream.clear();
-    stream << "Parting line points: " << result.partingLine.points.size()
-           << " | Core regions: " << result.cores.size()
-           << " | Sand cores: " << result.sandCores.size();
+    stream << "分型线点数: " << result.partingLine.points.size()
+           << " | 芯区域数量: " << result.cores.size()
+           << " | 砂芯数量: " << result.sandCores.size();
     print(stream.str());
 
     stream.str("");
     stream.clear();
-    stream << "Separability: " << (result.separability.separable ? "separable" : "not separable")
-           << " | Obstacles: " << result.separability.obstacles.size()
-           << " | Max contour area: " << result.maxContour.area;
+    stream << "可分离性: " << (result.separability.separable ? "可分离" : "不可分离")
+           << " | 障碍数量: " << result.separability.obstacles.size()
+           << " | 最大轮廓面积: " << result.maxContour.area;
     print(stream.str());
 
     stream.str("");
     stream.clear();
-    stream << "Contour source: " << (result.maxContour.selectedFromSlice ? "slice" : "fallback")
-           << " | Slice index: " << result.maxContour.selectedSliceIndex
-           << " | Local W: " << result.maxContour.selectedSliceW
-           << " | Fallback used: " << (result.maxContour.fallbackUsed ? "yes" : "no");
+    stream << "轮廓来源: " << (result.maxContour.selectedFromSlice ? "切片" : "回退")
+           << " | 切片索引: " << result.maxContour.selectedSliceIndex
+           << " | 局部W: " << result.maxContour.selectedSliceW
+           << " | 是否回退: " << (result.maxContour.fallbackUsed ? "是" : "否");
     print(stream.str());
 
     highlightPartingSurface(result.partingSurface.boundary);
@@ -584,8 +583,8 @@ void MyClass::do_it() {
 //  Explicit Execution
 extern "C" DllExport void ufusr(char* parm, int* returnCode, int rlen) {
     if (UF_initialize() != 0) {
-        UI::GetUI()->NXMessageBox()->Show("UF Error", NXOpen::NXMessageBox::DialogTypeError,
-                                          "UF_initialize failed.");
+        UI::GetUI()->NXMessageBox()->Show("UF 错误", NXOpen::NXMessageBox::DialogTypeError,
+                                          "UF_initialize 初始化失败。");
         return;
     }
     try {
@@ -595,14 +594,14 @@ extern "C" DllExport void ufusr(char* parm, int* returnCode, int rlen) {
         theMyClass->do_it();
         delete theMyClass;
     } catch (const NXException& e1) {
-        UI::GetUI()->NXMessageBox()->Show("NXException", NXOpen::NXMessageBox::DialogTypeError,
+        UI::GetUI()->NXMessageBox()->Show("NX 异常", NXOpen::NXMessageBox::DialogTypeError,
                                           e1.Message());
     } catch (const exception& e2) {
-        UI::GetUI()->NXMessageBox()->Show("Exception", NXOpen::NXMessageBox::DialogTypeError,
+        UI::GetUI()->NXMessageBox()->Show("异常", NXOpen::NXMessageBox::DialogTypeError,
                                           e2.what());
     } catch (...) {
-        UI::GetUI()->NXMessageBox()->Show("Exception", NXOpen::NXMessageBox::DialogTypeError,
-                                          "Unknown Exception.");
+        UI::GetUI()->NXMessageBox()->Show("异常", NXOpen::NXMessageBox::DialogTypeError,
+                                          "未知异常。");
     }
     UF_terminate();
 }
