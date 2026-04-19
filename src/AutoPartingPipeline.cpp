@@ -1212,6 +1212,420 @@ namespace casting {
         }
 
         DemoldEvaluation evaluateRegionDirection(const Mesh& mesh, const std::vector<std::size_t>& indices,
+            const Vector3& direction, double draftAngleDegrees);
+        Bounds expandBounds(const Bounds& bounds, double clearance);
+
+        Vector3 boundsSize(const Bounds& bounds) {
+            return {
+                std::max(0.0, bounds.max.x - bounds.min.x),
+                std::max(0.0, bounds.max.y - bounds.min.y),
+                std::max(0.0, bounds.max.z - bounds.min.z)
+            };
+        }
+
+        std::array<double, 3> sortedAxisLengths(const Bounds& bounds) {
+            Vector3 size = boundsSize(bounds);
+            std::array<double, 3> lengths{ size.x, size.y, size.z };
+            std::sort(lengths.begin(), lengths.end());
+            return lengths;
+        }
+
+        bool isNear(double value, double reference, double tolerance) {
+            return std::abs(value - reference) <= tolerance;
+        }
+
+        struct RegionSurfaceContact {
+            bool touchMinX = false;
+            bool touchMaxX = false;
+            bool touchMinY = false;
+            bool touchMaxY = false;
+            bool touchMinZ = false;
+            bool touchMaxZ = false;
+        };
+
+        RegionSurfaceContact analyzeRegionSurfaceContact(const CoreRegion& region, const Bounds& meshBounds) {
+            Vector3 meshSize = boundsSize(meshBounds);
+            double tolX = std::max(kClosureTolerance, meshSize.x * 0.03);
+            double tolY = std::max(kClosureTolerance, meshSize.y * 0.03);
+            double tolZ = std::max(kClosureTolerance, meshSize.z * 0.03);
+            RegionSurfaceContact contact;
+            contact.touchMinX = isNear(region.bounds.min.x, meshBounds.min.x, tolX);
+            contact.touchMaxX = isNear(region.bounds.max.x, meshBounds.max.x, tolX);
+            contact.touchMinY = isNear(region.bounds.min.y, meshBounds.min.y, tolY);
+            contact.touchMaxY = isNear(region.bounds.max.y, meshBounds.max.y, tolY);
+            contact.touchMinZ = isNear(region.bounds.min.z, meshBounds.min.z, tolZ);
+            contact.touchMaxZ = isNear(region.bounds.max.z, meshBounds.max.z, tolZ);
+            return contact;
+        }
+
+        std::size_t countBoundaryConnections(const RegionSurfaceContact& contact) {
+            return static_cast<std::size_t>(contact.touchMinX) +
+                static_cast<std::size_t>(contact.touchMaxX) +
+                static_cast<std::size_t>(contact.touchMinY) +
+                static_cast<std::size_t>(contact.touchMaxY) +
+                static_cast<std::size_t>(contact.touchMinZ) +
+                static_cast<std::size_t>(contact.touchMaxZ);
+        }
+
+        Vector3 principalAxisDirection(const Bounds& bounds) {
+            Vector3 size = boundsSize(bounds);
+            if (size.x >= size.y && size.x >= size.z) {
+                return { 1.0, 0.0, 0.0 };
+            }
+            if (size.y >= size.x && size.y >= size.z) {
+                return { 0.0, 1.0, 0.0 };
+            }
+            return { 0.0, 0.0, 1.0 };
+        }
+
+        Vector3 fallbackPerpendicularDirection(const Vector3& demoldDirection) {
+            const std::array<Vector3, 3> priorityAxes{ Vector3{1.0, 0.0, 0.0},
+                                                       Vector3{0.0, 1.0, 0.0},
+                                                       Vector3{0.0, 0.0, 1.0} };
+            Vector3 demold = normalized(demoldDirection);
+            for (const auto& axis : priorityAxes) {
+                if (std::abs(dot(axis, demold)) < 0.95) {
+                    return normalized(axis - demold * dot(axis, demold));
+                }
+            }
+            return { 1.0, 0.0, 0.0 };
+        }
+
+        Vector3 averageRegionNormal(const Mesh& mesh, const CoreRegion& region) {
+            Vector3 average{};
+            for (std::size_t triIndex : region.triangleIndices) {
+                average += triangleNormal(mesh, mesh.triangles.at(triIndex));
+            }
+            return normalized(average);
+        }
+
+        Vector3 openDirectionFromContact(const RegionSurfaceContact& contact, const Bounds& regionBounds) {
+            Vector3 size = boundsSize(regionBounds);
+            struct Candidate {
+                bool touched = false;
+                double score = -1.0;
+                Vector3 direction{};
+            };
+            std::array<Candidate, 6> candidates{{
+                {contact.touchMinX, size.x, {-1.0, 0.0, 0.0}},
+                {contact.touchMaxX, size.x, { 1.0, 0.0, 0.0}},
+                {contact.touchMinY, size.y, {0.0, -1.0, 0.0}},
+                {contact.touchMaxY, size.y, {0.0,  1.0, 0.0}},
+                {contact.touchMinZ, size.z, {0.0, 0.0, -1.0}},
+                {contact.touchMaxZ, size.z, {0.0, 0.0,  1.0}}
+            }};
+            Candidate best{};
+            for (const auto& candidate : candidates) {
+                if (!candidate.touched) {
+                    continue;
+                }
+                if (candidate.score > best.score) {
+                    best = candidate;
+                }
+            }
+            return normalized(best.direction);
+        }
+
+        bool isExternalRegion(const RegionSurfaceContact& contact) {
+            return contact.touchMinX || contact.touchMaxX ||
+                contact.touchMinY || contact.touchMaxY ||
+                contact.touchMinZ || contact.touchMaxZ;
+        }
+
+        SandCoreTopology inferTopology(std::size_t boundaryConnectionCount) {
+            if (boundaryConnectionCount >= 2) {
+                return SandCoreTopology::ThroughHole;
+            }
+            if (boundaryConnectionCount == 1) {
+                return SandCoreTopology::BlindHole;
+            }
+            return SandCoreTopology::ClosedCavity;
+        }
+
+        SandCoreShape inferShape(const Bounds& bounds) {
+            std::array<double, 3> lengths = sortedAxisLengths(bounds);
+            double minLength = std::max(lengths[0], kClosureTolerance);
+            double midLength = std::max(lengths[1], kClosureTolerance);
+            double maxLength = lengths[2];
+            if (maxLength / minLength > 5.0 || maxLength / midLength > 2.0) {
+                return SandCoreShape::Straight;
+            }
+            return SandCoreShape::Curved;
+        }
+
+        double estimateCurvatureDegrees(const Bounds& bounds, SandCoreShape shape) {
+            if (shape == SandCoreShape::Straight) {
+                return 15.0;
+            }
+            std::array<double, 3> lengths = sortedAxisLengths(bounds);
+            double minLength = std::max(lengths[0], kClosureTolerance);
+            double maxLength = lengths[2];
+            double compactness = std::clamp(minLength / std::max(maxLength, kClosureTolerance), 0.0, 1.0);
+            return 45.0 + (1.0 - compactness) * 20.0;
+        }
+
+        SandCoreType inferSandCoreType(bool external,
+            SandCoreTopology topology,
+            SandCoreShape shape) {
+            if (external) {
+                return SandCoreType::ExternalSlide;
+            }
+            if (topology == SandCoreTopology::ThroughHole) {
+                return SandCoreType::Runner;
+            }
+            if (shape == SandCoreShape::Curved) {
+                return SandCoreType::Composite;
+            }
+            return SandCoreType::InternalCavity;
+        }
+
+        SandCoreGenerationMethod selectGenerationMethod(SandCoreType type, SandCoreShape shape) {
+            if (type == SandCoreType::Runner || shape == SandCoreShape::Curved) {
+                return SandCoreGenerationMethod::Sweep;
+            }
+            if (type == SandCoreType::InternalCavity || type == SandCoreType::Composite) {
+                return SandCoreGenerationMethod::BooleanSubtract;
+            }
+            return SandCoreGenerationMethod::Extrude;
+        }
+
+        Vector3 computeSandCorePullDirection(const Mesh& mesh,
+            const CoreRegion& region,
+            const Vector3& demoldDirection,
+            bool external,
+            bool hasOpeningDirection,
+            const Vector3& openingDirection) {
+            if (hasOpeningDirection && length(openingDirection) > std::numeric_limits<double>::epsilon()) {
+                return normalized(openingDirection);
+            }
+
+            if (external) {
+                Vector3 avgNormal = averageRegionNormal(mesh, region);
+                Vector3 demold = normalized(demoldDirection);
+                Vector3 projected = avgNormal - demold * dot(avgNormal, demold);
+                if (length(projected) > std::numeric_limits<double>::epsilon()) {
+                    return normalized(projected);
+                }
+            } else {
+                Vector3 axis = principalAxisDirection(region.bounds);
+                if (length(axis) > std::numeric_limits<double>::epsilon()) {
+                    return normalized(axis);
+                }
+            }
+
+            return fallbackPerpendicularDirection(demoldDirection);
+        }
+
+        Bounds generateSandCoreGeometryBounds(const CoreRegion& region,
+            const Vector3& pullDirection,
+            SandCoreGenerationMethod method,
+            const AutoPartingSettings& settings) {
+            Bounds generated = region.bounds;
+            if (method == SandCoreGenerationMethod::Extrude) {
+                generated = extendBoundsAlongDirection(generated, pullDirection, settings.coreHeadLength * 0.6);
+            } else if (method == SandCoreGenerationMethod::Sweep) {
+                generated = expandBounds(generated, std::max(0.5, settings.moldClearance));
+            } else {
+                generated = expandBounds(generated, std::max(1.0, settings.moldClearance * 1.5));
+            }
+            return generated;
+        }
+
+        std::pair<Bounds, Bounds> splitBoundsAtMid(const Bounds& bounds) {
+            Vector3 size = boundsSize(bounds);
+            Bounds first = bounds;
+            Bounds second = bounds;
+            if (size.x >= size.y && size.x >= size.z) {
+                double split = (bounds.min.x + bounds.max.x) * 0.5;
+                first.max.x = split;
+                second.min.x = split;
+            } else if (size.y >= size.x && size.y >= size.z) {
+                double split = (bounds.min.y + bounds.max.y) * 0.5;
+                first.max.y = split;
+                second.min.y = split;
+            } else {
+                double split = (bounds.min.z + bounds.max.z) * 0.5;
+                first.max.z = split;
+                second.min.z = split;
+            }
+            return { first, second };
+        }
+
+        CoreHeadSpec buildCoreHead(const Bounds& coreBounds,
+            const Vector3& pullDirection,
+            bool touchesExternalSurface,
+            std::size_t boundaryConnectionCount,
+            const AutoPartingSettings& settings,
+            bool opposite = false) {
+            Vector3 size = boundsSize(coreBounds);
+            double coreHeight = std::max(size.z, kClosureTolerance);
+            double coreLength = std::max({ size.x, size.y, size.z, kClosureTolerance });
+            Vector3 direction = normalized(pullDirection);
+            if (opposite) {
+                direction = direction * -1.0;
+            }
+
+            CoreHeadSpec head;
+            head.direction = direction;
+            head.clearance = std::clamp(settings.coreSeatClearance, 0.3, 0.8);
+            head.position = {
+                (coreBounds.min.x + coreBounds.max.x) * 0.5 + direction.x * coreLength * 0.5,
+                (coreBounds.min.y + coreBounds.max.y) * 0.5 + direction.y * coreLength * 0.5,
+                (coreBounds.min.z + coreBounds.max.z) * 0.5 + direction.z * coreHeight * 0.5
+            };
+
+            if (direction.z > 0.6) {
+                head.orientation = CoreHeadOrientation::VerticalUp;
+                head.length = coreHeight * 0.15;
+                head.draftAngleDegrees = 4.0;
+            } else if (direction.z < -0.6) {
+                head.orientation = CoreHeadOrientation::VerticalDown;
+                head.length = coreHeight * 0.25;
+                head.draftAngleDegrees = 2.0;
+            } else {
+                bool cantilever = touchesExternalSurface && boundaryConnectionCount <= 1;
+                head.orientation = cantilever ? CoreHeadOrientation::HorizontalCantilever
+                    : CoreHeadOrientation::HorizontalSupported;
+                head.length = coreLength * (cantilever ? 0.6 : 0.3);
+                head.draftAngleDegrees = cantilever ? 2.5 : 1.5;
+            }
+
+            head.diameter = std::max(std::min(size.x, size.y), kClosureTolerance);
+            head.antiCompressionRing = head.diameter > coreLength * 0.35;
+            return head;
+        }
+
+        SandCoreManufacturability evaluateSandCoreManufacturability(const SandCore& core,
+            const Bounds& meshBounds,
+            CastingMaterial material) {
+            SandCoreManufacturability check;
+            std::array<double, 3> lengths = sortedAxisLengths(core.geometryBounds);
+            double minSize = std::max(lengths[0], kClosureTolerance);
+            double maxSize = lengths[2];
+            check.minWallThickness = minSize;
+            check.slendernessRatio = maxSize / minSize;
+
+            double minWallThreshold = material == CastingMaterial::CastSteel ? 6.0 : 8.0;
+            check.minWallThicknessOk = check.minWallThickness >= minWallThreshold;
+            check.slendernessOk = check.slendernessRatio <= 5.0;
+            check.pullPathClear = boundsContains(expandBounds(meshBounds, maxSize), core.geometryBounds);
+
+            if (!check.minWallThicknessOk) {
+                check.messages.push_back("Minimum wall thickness below material threshold.");
+            }
+            if (!check.slendernessOk) {
+                check.messages.push_back("Length/diameter ratio exceeds 5.");
+            }
+            if (!check.pullPathClear) {
+                check.messages.push_back("Pull path may interfere with surrounding structure.");
+            }
+            return check;
+        }
+
+        void appendStageLog(SandCoreDiagnostics* diagnostics, const std::string& message) {
+            if (diagnostics) {
+                diagnostics->stageLogs.push_back(message);
+            }
+        }
+
+        SandCore createSandCoreFromRegion(const Mesh& mesh,
+            const CoreRegion& region,
+            const Bounds& meshBounds,
+            const Vector3& demoldDirection,
+            const AutoPartingSettings& settings,
+            std::size_t idSeed,
+            bool allowSegmentation = true) {
+            SandCore core;
+            core.id = idSeed;
+            core.nxBodyName = "SandCore_" + std::to_string(core.id);
+
+            RegionSurfaceContact contact = analyzeRegionSurfaceContact(region, meshBounds);
+            core.diagnostics.touchesExternalSurface = isExternalRegion(contact);
+            core.diagnostics.boundaryConnectionCount = countBoundaryConnections(contact);
+            core.diagnostics.topology = inferTopology(core.diagnostics.boundaryConnectionCount);
+            core.diagnostics.shape = inferShape(region.bounds);
+
+            std::array<double, 3> lengths = sortedAxisLengths(region.bounds);
+            core.diagnostics.lengthWidthRatio = lengths[2] / std::max(lengths[0], kClosureTolerance);
+            core.diagnostics.centerlineMaxCurvatureDeg =
+                estimateCurvatureDegrees(region.bounds, core.diagnostics.shape);
+            core.type = inferSandCoreType(core.diagnostics.touchesExternalSurface,
+                core.diagnostics.topology,
+                core.diagnostics.shape);
+            appendStageLog(&core.diagnostics, "Region classification completed.");
+
+            Vector3 openingDirection = openDirectionFromContact(contact, region.bounds);
+            bool hasOpeningDirection = length(openingDirection) > std::numeric_limits<double>::epsilon();
+            core.pullDirection = computeSandCorePullDirection(mesh, region, demoldDirection,
+                core.diagnostics.touchesExternalSurface,
+                hasOpeningDirection,
+                openingDirection);
+            appendStageLog(&core.diagnostics, "Pull direction computed.");
+
+            DemoldEvaluation pullEval = evaluateRegionDirection(mesh, region.triangleIndices, core.pullDirection,
+                settings.draftAngleDegrees);
+            core.diagnostics.hasUndercutAlongPull = pullEval.undercutRatio > settings.separabilityUndercutThreshold;
+            core.diagnostics.generationMethod = selectGenerationMethod(core.type, core.diagnostics.shape);
+            core.geometryBounds = generateSandCoreGeometryBounds(region, core.pullDirection,
+                core.diagnostics.generationMethod, settings);
+            appendStageLog(&core.diagnostics, "Geometry bounds generated.");
+
+            bool ratioSplit = core.diagnostics.lengthWidthRatio > 5.0;
+            bool curvatureSplit = core.diagnostics.centerlineMaxCurvatureDeg > 45.0;
+            bool undercutSplit = core.diagnostics.hasUndercutAlongPull;
+            core.diagnostics.requiresSegmentation = undercutSplit || ratioSplit || curvatureSplit;
+            appendStageLog(&core.diagnostics, "Segmentation decision completed.");
+
+            core.heads.push_back(buildCoreHead(core.geometryBounds, core.pullDirection,
+                core.diagnostics.touchesExternalSurface,
+                core.diagnostics.boundaryConnectionCount,
+                settings, false));
+            if (core.diagnostics.topology == SandCoreTopology::ThroughHole) {
+                core.heads.push_back(buildCoreHead(core.geometryBounds, core.pullDirection,
+                    core.diagnostics.touchesExternalSurface,
+                    core.diagnostics.boundaryConnectionCount,
+                    settings, true));
+            }
+            appendStageLog(&core.diagnostics, "Core head design completed.");
+
+            core.manufacturability = evaluateSandCoreManufacturability(core, meshBounds, settings.castingMaterial);
+            appendStageLog(&core.diagnostics, "Manufacturability check completed.");
+
+            if (allowSegmentation && core.diagnostics.requiresSegmentation) {
+                auto splitBounds = splitBoundsAtMid(core.geometryBounds);
+                CoreRegion firstRegion = region;
+                firstRegion.bounds = splitBounds.first;
+                CoreRegion secondRegion = region;
+                secondRegion.bounds = splitBounds.second;
+                core.subCores.push_back(createSandCoreFromRegion(mesh, firstRegion, meshBounds,
+                    demoldDirection, settings, idSeed * 10 + 1, false));
+                core.subCores.push_back(createSandCoreFromRegion(mesh, secondRegion, meshBounds,
+                    demoldDirection, settings, idSeed * 10 + 2, false));
+                appendStageLog(&core.diagnostics, "Core segmented into sub-cores.");
+            }
+
+            core.nxColor = kCoreColor + static_cast<int>(core.id % 6);
+            core.nxLayer = 90 + static_cast<int>(core.id % 10);
+            appendStageLog(&core.diagnostics, "NX mapping metadata assigned.");
+            return core;
+        }
+
+        std::vector<SandCore> generateSandCores(const Mesh& mesh,
+            const Vector3& demoldDirection,
+            const std::vector<CoreRegion>& regions,
+            const AutoPartingSettings& settings) {
+            std::vector<SandCore> sandCores;
+            Bounds meshBounds = computeBounds(mesh);
+            sandCores.reserve(regions.size());
+            std::size_t id = 1;
+            for (const auto& region : regions) {
+                sandCores.push_back(createSandCoreFromRegion(mesh, region, meshBounds,
+                    demoldDirection, settings, id++, true));
+            }
+            return sandCores;
+        }
+
+        DemoldEvaluation evaluateRegionDirection(const Mesh& mesh, const std::vector<std::size_t>& indices,
             const Vector3& direction, double draftAngleDegrees) {
             double totalArea = 0.0;
             double visibleArea = 0.0;
@@ -1621,6 +2035,8 @@ namespace casting {
                 }
             }
         }
+        result.sandCores = generateSandCores(result.cleanedMesh, result.demold.direction,
+            result.cores, settings);
         result.moldAssembly = buildMoldAssembly(result.cleanedMesh, result.partingSurface,
             result.demold.direction, settings, result.cores);
         result.strategies = buildStrategyOptions(result.separability, result.cores.size());

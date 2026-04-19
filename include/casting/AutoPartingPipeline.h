@@ -39,6 +39,89 @@ struct CoreRegion {
     Vector3 pullDirection{};
 };
 
+enum class CastingMaterial {
+    CastSteel,
+    CastIron
+};
+
+enum class SandCoreType {
+    ExternalSlide,
+    InternalCavity,
+    Runner,
+    Composite
+};
+
+enum class SandCoreTopology {
+    ThroughHole,
+    BlindHole,
+    ClosedCavity
+};
+
+enum class SandCoreShape {
+    Straight,
+    Curved
+};
+
+enum class SandCoreGenerationMethod {
+    Extrude,
+    Sweep,
+    BooleanSubtract
+};
+
+enum class CoreHeadOrientation {
+    VerticalUp,
+    VerticalDown,
+    HorizontalSupported,
+    HorizontalCantilever
+};
+
+struct CoreHeadSpec {
+    Vector3 position{};
+    Vector3 direction{};
+    double length{};
+    double draftAngleDegrees{};
+    double clearance{};
+    double diameter{};
+    bool antiCompressionRing = false;
+    CoreHeadOrientation orientation = CoreHeadOrientation::VerticalUp;
+};
+
+struct SandCoreDiagnostics {
+    bool touchesExternalSurface = false;
+    std::size_t boundaryConnectionCount = 0;
+    double lengthWidthRatio = 0.0;
+    double centerlineMaxCurvatureDeg = 0.0;
+    bool hasUndercutAlongPull = false;
+    bool requiresSegmentation = false;
+    SandCoreTopology topology = SandCoreTopology::ClosedCavity;
+    SandCoreShape shape = SandCoreShape::Straight;
+    SandCoreGenerationMethod generationMethod = SandCoreGenerationMethod::Extrude;
+    std::vector<std::string> stageLogs;
+};
+
+struct SandCoreManufacturability {
+    bool minWallThicknessOk = true;
+    bool slendernessOk = true;
+    bool pullPathClear = true;
+    double minWallThickness = 0.0;
+    double slendernessRatio = 0.0;
+    std::vector<std::string> messages;
+};
+
+struct SandCore {
+    std::size_t id{};
+    SandCoreType type = SandCoreType::InternalCavity;
+    Bounds geometryBounds{};
+    Vector3 pullDirection{};
+    std::vector<CoreHeadSpec> heads;
+    std::vector<SandCore> subCores;
+    SandCoreDiagnostics diagnostics;
+    SandCoreManufacturability manufacturability;
+    int nxColor = kCoreColor;
+    int nxLayer = 91;
+    std::string nxBodyName;
+};
+
 enum class ObstacleType {
     SlideCandidate,
     CoreCandidate,
@@ -127,6 +210,7 @@ struct AutoPartingSettings {
     double nonPlanarDeviationRatio = 0.08;
     std::size_t maxCoreCount = 1;
     double minCoreVolumeRatio = 0.02;
+    CastingMaterial castingMaterial = CastingMaterial::CastIron;
 };
 
 struct AutoPartingResult {
@@ -139,6 +223,7 @@ struct AutoPartingResult {
     SeparabilityReport separability;
     SplitResult split;
     std::vector<CoreRegion> cores;
+    std::vector<SandCore> sandCores;
     MoldAssembly moldAssembly;
     std::vector<StrategyOption> strategies;
     std::vector<InterferenceIssue> issues;

@@ -42,6 +42,7 @@ int main() {
     std::cout << "Parting line points: " << result.partingLine.points.size() << "\n";
     std::cout << "Parting surface stages: " << result.partingSurfaceStages.size() << "\n";
     std::cout << "Core regions: " << result.cores.size() << "\n";
+    std::cout << "Sand cores: " << result.sandCores.size() << "\n";
     std::cout << "Separability: " << (result.separability.separable ? "separable" : "not separable")
               << " | Obstacles: " << result.separability.obstacles.size() << "\n";
     std::cout << "Max contour area: " << result.maxContour.area << "\n";
@@ -52,6 +53,11 @@ int main() {
               << " | Fallback used: " << (result.maxContour.fallbackUsed ? "yes" : "no") << "\n";
     std::cout << "Mold blocks: " << result.moldAssembly.blocks.size() << "\n";
     std::cout << "Core inserts: " << result.moldAssembly.cores.size() << "\n";
+    if (!result.sandCores.empty()) {
+        const auto& firstCore = result.sandCores.front();
+        std::cout << "First sand core heads: " << firstCore.heads.size()
+                  << " | sub-cores: " << firstCore.subCores.size() << "\n";
+    }
     std::cout << "Interference issues: " << result.issues.size() << "\n";
     std::cout << "Visualization colors: Upper=" << casting::kUpperMoldColor
               << ", Lower=" << casting::kLowerMoldColor

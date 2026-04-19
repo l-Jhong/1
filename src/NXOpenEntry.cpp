@@ -33,6 +33,7 @@
 
 // Std C++ Includes
 #include <cstdio>
+#include <algorithm>
 #include <iostream>
 #include <limits>
 #include <sstream>
@@ -229,7 +230,7 @@ std::vector<tag_t> collectSolidBodyTags(BasePart* workPart) {
     return tags;
 }
 
-NXOpen::Body* createExtrudedRectangularSolid(const casting::Bounds& bounds, int color) {
+NXOpen::Body* createExtrudedRectangularSolid(const casting::Bounds& bounds, int color, int layer = -1) {
     double edgeX = bounds.max.x - bounds.min.x;
     double edgeY = bounds.max.y - bounds.min.y;
     double edgeZ = bounds.max.z - bounds.min.z;
@@ -307,6 +308,9 @@ NXOpen::Body* createExtrudedRectangularSolid(const casting::Bounds& bounds, int 
     }
 
     UF_OBJ_set_color(bodyTag, color);
+    if (layer > 0) {
+        UF_OBJ_set_layer(bodyTag, layer);
+    }
     return dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(bodyTag));
 }
 
@@ -330,6 +334,8 @@ public:
     void print(const char*);
     void highlightPartingSurface(const std::vector<casting::Vector3>& boundary);
     void showMoldAssembly(const casting::MoldAssembly& assembly);
+    void showSandCores(const std::vector<casting::SandCore>& sandCores);
+    void showSandCoreRecursive(const casting::SandCore& sandCore);
 
 private:
     BasePart* workPart;
@@ -477,6 +483,36 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
         createBlock(core.headBounds, casting::kCoreHeadColor);
     }
 }
+
+void MyClass::showSandCoreRecursive(const casting::SandCore& sandCore) {
+    createExtrudedRectangularSolid(
+        sandCore.geometryBounds, sandCore.nxColor, sandCore.nxLayer);
+
+    for (const auto& head : sandCore.heads) {
+        casting::Bounds headBounds = sandCore.geometryBounds;
+        double span = std::max(1.0, head.length);
+        headBounds.min.x = head.position.x - span * 0.25;
+        headBounds.max.x = head.position.x + span * 0.25;
+        headBounds.min.y = head.position.y - span * 0.25;
+        headBounds.max.y = head.position.y + span * 0.25;
+        headBounds.min.z = head.position.z - span * 0.25;
+        headBounds.max.z = head.position.z + span * 0.25;
+        createExtrudedRectangularSolid(headBounds, casting::kCoreHeadColor, sandCore.nxLayer);
+    }
+
+    for (const auto& subCore : sandCore.subCores) {
+        showSandCoreRecursive(subCore);
+    }
+}
+
+void MyClass::showSandCores(const std::vector<casting::SandCore>& sandCores) {
+    if (!workPart) {
+        return;
+    }
+    for (const auto& sandCore : sandCores) {
+        showSandCoreRecursive(sandCore);
+    }
+}
 //------------------------------------------------------------------------------
 // Do something
 //------------------------------------------------------------------------------
@@ -518,7 +554,8 @@ void MyClass::do_it() {
     stream.str("");
     stream.clear();
     stream << "Parting line points: " << result.partingLine.points.size()
-           << " | Core regions: " << result.cores.size();
+           << " | Core regions: " << result.cores.size()
+           << " | Sand cores: " << result.sandCores.size();
     print(stream.str());
 
     stream.str("");
@@ -538,6 +575,7 @@ void MyClass::do_it() {
 
     highlightPartingSurface(result.partingSurface.boundary);
     showMoldAssembly(result.moldAssembly);
+    showSandCores(result.sandCores);
 }
 
 //------------------------------------------------------------------------------
