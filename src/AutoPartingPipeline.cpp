@@ -57,6 +57,7 @@ namespace casting {
         constexpr int kSandCoreColorVariants = 6;
         constexpr int kSandCoreBaseLayer = 90;
         constexpr int kSandCoreLayerVariants = 10;
+        constexpr std::size_t kVisualHashMultiplier = 2654435761U;
 
         double degreesToRadians(double degrees) {
             return degrees * kPi / 180.0;
@@ -1516,9 +1517,15 @@ namespace casting {
             check.minWallThickness = minSize;
             check.slendernessRatio = maxSize / minSize;
 
-            double minWallThreshold = material == CastingMaterial::CastSteel
-                ? kCastSteelMinWallThickness
-                : kCastIronMinWallThickness;
+            double minWallThreshold = kCastIronMinWallThickness;
+            switch (material) {
+            case CastingMaterial::CastSteel:
+                minWallThreshold = kCastSteelMinWallThickness;
+                break;
+            case CastingMaterial::CastIron:
+                minWallThreshold = kCastIronMinWallThickness;
+                break;
+            }
             check.minWallThicknessOk = check.minWallThickness >= minWallThreshold;
             check.slendernessOk = check.slendernessRatio <= 5.0;
             check.pullPathClear = boundsContains(expandBounds(meshBounds, maxSize), core.geometryBounds);
@@ -1618,7 +1625,7 @@ namespace casting {
             }
 
             // Keep generated core bodies visually distinct while staying in a compact layer range.
-            std::size_t visualKey = core.id * 2654435761U;
+            std::size_t visualKey = core.id * kVisualHashMultiplier;
             core.nxColor = kCoreColor + static_cast<int>(visualKey % kSandCoreColorVariants);
             core.nxLayer = kSandCoreBaseLayer + static_cast<int>(visualKey % kSandCoreLayerVariants);
             appendStageLog(&core.diagnostics, "NX mapping metadata assigned.");

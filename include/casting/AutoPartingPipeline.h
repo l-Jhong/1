@@ -195,6 +195,7 @@ struct InterferenceIssue {
 
 struct AutoPartingSettings {
     // Length-related values use model units (typically mm in casting workflows).
+    // Area value in squared model units (typically mm²).
     double minTriangleArea = 1e-8;
     // Angles are expressed in degrees.
     double draftAngleDegrees = 2.0;
