@@ -194,7 +194,9 @@ struct InterferenceIssue {
 };
 
 struct AutoPartingSettings {
+    // Length-related values use model units (typically mm in casting workflows).
     double minTriangleArea = 1e-8;
+    // Angles are expressed in degrees.
     double draftAngleDegrees = 2.0;
     double undercutPenalty = 1.5;
     double visibilityPenalty = 0.5;
@@ -210,6 +212,7 @@ struct AutoPartingSettings {
     double nonPlanarDeviationRatio = 0.08;
     std::size_t maxCoreCount = 1;
     double minCoreVolumeRatio = 0.02;
+    // Material used by manufacturability checks (minimum wall-thickness thresholds).
     CastingMaterial castingMaterial = CastingMaterial::CastIron;
 };
 

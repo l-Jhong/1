@@ -43,10 +43,20 @@ namespace casting {
         constexpr double kMinSectionClusteringTolerance = 1e-4;
         constexpr double kSplitPlaneContainmentTolerance = 1e-6;
         constexpr double kSplitPlaneMinThicknessRatio = 1e-3;
+        // Sampling slices used to estimate max contour; tuned to balance stability and runtime.
         constexpr std::size_t kContourSliceCount = 33;
         constexpr double kSliceTieAreaRatio = 0.03;
         constexpr double kSliceAreaEpsilon = 1e-8;
         constexpr double kSliceIntersectionTolerance = 1e-8;
+        constexpr double kStraightShapeLengthRatioThreshold = 5.0;
+        constexpr double kStraightShapePrimarySecondaryRatioThreshold = 2.0;
+        constexpr double kStraightBaselineCurvatureDeg = 15.0;
+        constexpr double kCurvedBaselineCurvatureDeg = 45.0;
+        constexpr double kCastSteelMinWallThicknessMm = 6.0;
+        constexpr double kCastIronMinWallThicknessMm = 8.0;
+        constexpr int kSandCoreColorVariants = 6;
+        constexpr int kSandCoreBaseLayer = 90;
+        constexpr int kSandCoreLayerVariants = 10;
 
         double degreesToRadians(double degrees) {
             return degrees * kPi / 180.0;
@@ -1347,7 +1357,8 @@ namespace casting {
             double minLength = std::max(lengths[0], kClosureTolerance);
             double midLength = std::max(lengths[1], kClosureTolerance);
             double maxLength = lengths[2];
-            if (maxLength / minLength > 5.0 || maxLength / midLength > 2.0) {
+            if (maxLength / minLength > kStraightShapeLengthRatioThreshold ||
+                maxLength / midLength > kStraightShapePrimarySecondaryRatioThreshold) {
                 return SandCoreShape::Straight;
             }
             return SandCoreShape::Curved;
@@ -1355,13 +1366,13 @@ namespace casting {
 
         double estimateCurvatureDegrees(const Bounds& bounds, SandCoreShape shape) {
             if (shape == SandCoreShape::Straight) {
-                return 15.0;
+                return kStraightBaselineCurvatureDeg;
             }
             std::array<double, 3> lengths = sortedAxisLengths(bounds);
             double minLength = std::max(lengths[0], kClosureTolerance);
             double maxLength = lengths[2];
             double compactness = std::clamp(minLength / std::max(maxLength, kClosureTolerance), 0.0, 1.0);
-            return 45.0 + (1.0 - compactness) * 20.0;
+            return kCurvedBaselineCurvatureDeg + (1.0 - compactness) * 20.0;
         }
 
         SandCoreType inferSandCoreType(bool external,
@@ -1505,7 +1516,9 @@ namespace casting {
             check.minWallThickness = minSize;
             check.slendernessRatio = maxSize / minSize;
 
-            double minWallThreshold = material == CastingMaterial::CastSteel ? 6.0 : 8.0;
+            double minWallThreshold = material == CastingMaterial::CastSteel
+                ? kCastSteelMinWallThicknessMm
+                : kCastIronMinWallThicknessMm;
             check.minWallThicknessOk = check.minWallThickness >= minWallThreshold;
             check.slendernessOk = check.slendernessRatio <= 5.0;
             check.pullPathClear = boundsContains(expandBounds(meshBounds, maxSize), core.geometryBounds);
@@ -1604,8 +1617,9 @@ namespace casting {
                 appendStageLog(&core.diagnostics, "Core segmented into sub-cores.");
             }
 
-            core.nxColor = kCoreColor + static_cast<int>(core.id % 6);
-            core.nxLayer = 90 + static_cast<int>(core.id % 10);
+            // Keep generated core bodies visually distinct while staying in a compact layer range.
+            core.nxColor = kCoreColor + static_cast<int>(core.id % kSandCoreColorVariants);
+            core.nxLayer = kSandCoreBaseLayer + static_cast<int>(core.id % kSandCoreLayerVariants);
             appendStageLog(&core.diagnostics, "NX mapping metadata assigned.");
             return core;
         }
