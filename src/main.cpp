@@ -35,33 +35,33 @@ int main() {
     casting::Mesh mesh = buildBoxMesh(10.0);
     casting::AutoPartingResult result = pipeline.run(mesh);
 
-    std::cout << "脱模方向: (" << result.demold.direction.x << ", "
+    std::cout << "Demold direction: (" << result.demold.direction.x << ", "
               << result.demold.direction.y << ", " << result.demold.direction.z << ")\n";
-    std::cout << "可见性比例: " << result.demold.visibilityRatio << "\n";
-    std::cout << "倒扣比例: " << result.demold.undercutRatio << "\n";
-    std::cout << "分型线点数: " << result.partingLine.points.size() << "\n";
-    std::cout << "分型面阶段数: " << result.partingSurfaceStages.size() << "\n";
-    std::cout << "芯区域数量: " << result.cores.size() << "\n";
-    std::cout << "砂芯数量: " << result.sandCores.size() << "\n";
-    std::cout << "可分离性: " << (result.separability.separable ? "可分离" : "不可分离")
-              << " | 障碍数量: " << result.separability.obstacles.size() << "\n";
-    std::cout << "最大轮廓面积: " << result.maxContour.area << "\n";
-    std::cout << "最大轮廓来源: "
-              << (result.maxContour.selectedFromSlice ? "切片" : "回退")
-              << " | 切片索引: " << result.maxContour.selectedSliceIndex
-              << " | 局部W: " << result.maxContour.selectedSliceW
-              << " | 是否回退: " << (result.maxContour.fallbackUsed ? "是" : "否") << "\n";
-    std::cout << "模具块数量: " << result.moldAssembly.blocks.size() << "\n";
-    std::cout << "芯镶件数量: " << result.moldAssembly.cores.size() << "\n";
+    std::cout << "Visibility ratio: " << result.demold.visibilityRatio << "\n";
+    std::cout << "Undercut ratio: " << result.demold.undercutRatio << "\n";
+    std::cout << "Parting line points: " << result.partingLine.points.size() << "\n";
+    std::cout << "Parting surface stages: " << result.partingSurfaceStages.size() << "\n";
+    std::cout << "Core regions: " << result.cores.size() << "\n";
+    std::cout << "Sand cores: " << result.sandCores.size() << "\n";
+    std::cout << "Separability: " << (result.separability.separable ? "separable" : "not separable")
+              << " | Obstacles: " << result.separability.obstacles.size() << "\n";
+    std::cout << "Max contour area: " << result.maxContour.area << "\n";
+    std::cout << "Max contour source: "
+              << (result.maxContour.selectedFromSlice ? "slice" : "fallback")
+              << " | Slice index: " << result.maxContour.selectedSliceIndex
+              << " | Local W: " << result.maxContour.selectedSliceW
+              << " | Used fallback: " << (result.maxContour.fallbackUsed ? "yes" : "no") << "\n";
+    std::cout << "Mold blocks: " << result.moldAssembly.blocks.size() << "\n";
+    std::cout << "Core inserts: " << result.moldAssembly.cores.size() << "\n";
     if (!result.sandCores.empty()) {
         const auto& firstCore = result.sandCores.front();
-        std::cout << "首个砂芯芯头数量: " << firstCore.heads.size()
-                  << " | 子芯数量: " << firstCore.subCores.size() << "\n";
+        std::cout << "First sand core heads: " << firstCore.heads.size()
+                  << " | Sub-cores: " << firstCore.subCores.size() << "\n";
     }
-    std::cout << "干涉问题数量: " << result.issues.size() << "\n";
-    std::cout << "可视化颜色: 上模=" << casting::kUpperMoldColor
-              << ", 下模=" << casting::kLowerMoldColor
-              << ", 芯=" << casting::kCoreColor << "\n";
+    std::cout << "Interference issues: " << result.issues.size() << "\n";
+    std::cout << "Visualization colors: upper=" << casting::kUpperMoldColor
+              << ", lower=" << casting::kLowerMoldColor
+              << ", core=" << casting::kCoreColor << "\n";
 
     return 0;
 }

@@ -552,7 +552,7 @@ namespace casting {
                 return surface;
             }
 
-            // 1) 以分型线重心作为基准点，构建与脱模方向垂直的基准平面
+            // 1) Use parting-line centroid as origin and build a reference plane perpendicular to demold direction.
             Vector3 centroid{};
             for (const auto& point : line.points) {
                 centroid += point;
@@ -561,10 +561,10 @@ namespace casting {
             PlaneBasis basis = buildPlaneBasis(centroid, direction);
 
             if (stages) {
-                stages->push_back({ "原始", line.points });
+                stages->push_back({ "Original", line.points });
             }
 
-            // 2) 将分型线投影到基准平面，得到二维投影曲线
+            // 2) Project the parting line onto the reference plane to get a 2D curve.
             std::vector<Vector2> projected;
             projected.reserve(line.points.size());
             std::vector<Vector3> localPoints;
@@ -589,7 +589,7 @@ namespace casting {
             projected = closeLoop2D(projected);
             if (stages) {
                 PartingSurfaceStage projectedStage;
-                projectedStage.name = "投影";
+                projectedStage.name = "Projected";
                 for (const auto& point : projected) {
                     projectedStage.boundary.push_back(liftFromPlane(point, basis));
                 }
@@ -600,21 +600,21 @@ namespace casting {
             double deviationRatio = planeExtent <= std::numeric_limits<double>::epsilon()
                 ? 0.0
                 : (maxW - minW) / planeExtent;
-            // 默认优先平面分型面，只有起伏超过阈值时才允许非平面
+            // Prefer planar parting surface by default; allow non-planar only if deviation exceeds threshold.
             bool allowNonPlanar = !preferPlanarSurface || deviationRatio > nonPlanarDeviationRatio;
 
-            // 3) 对投影曲线做平滑处理，去除高频噪声
+            // 3) Smooth the projected curve to remove high-frequency noise.
             std::vector<Vector2> smoothed = smoothClosedCurve2D(projected, smoothingFactor);
             if (stages) {
                 PartingSurfaceStage smoothedStage;
-                smoothedStage.name = "平滑";
+                smoothedStage.name = "Smoothed";
                 for (const auto& point : smoothed) {
                     smoothedStage.boundary.push_back(liftFromPlane(point, basis));
                 }
                 stages->push_back(smoothedStage);
             }
 
-            // 4) 检查投影曲线是否存在自交，必要时以凸包进行自动修复
+            // 4) Check whether projected curve self-intersects; repair with convex hull when needed.
             std::vector<Vector2> repaired = smoothed;
             if (hasSelfIntersection2D(closeLoop2D(repaired))) {
                 std::vector<Vector2> hull = computeConvexHull2D(repaired);
@@ -622,7 +622,7 @@ namespace casting {
                     repaired = closeLoop2D(hull);
                     if (stages) {
                         PartingSurfaceStage repairedStage;
-                        repairedStage.name = "修复";
+                        repairedStage.name = "Repaired";
                         for (const auto& point : repaired) {
                             repairedStage.boundary.push_back(liftFromPlane(point, basis));
                         }
@@ -631,19 +631,19 @@ namespace casting {
                 }
             }
 
-            // 5) 沿法向的垂直平面内向外延伸，保证分型面覆盖范围
+            // 5) Extend outward in the normal-perpendicular plane to guarantee coverage.
             std::vector<Vector2> extended = extendCurve2D(repaired, extension);
             extended = closeLoop2D(extended);
             if (stages) {
                 PartingSurfaceStage extendedStage;
-                extendedStage.name = "外扩";
+                extendedStage.name = "Expanded";
                 for (const auto& point : extended) {
                     extendedStage.boundary.push_back(liftFromPlane(point, basis));
                 }
                 stages->push_back(extendedStage);
             }
 
-            // 6) 必要时保留非平面起伏，否则输出平面分型面
+            // 6) Keep non-planar variation when needed; otherwise output planar parting surface.
             if (allowNonPlanar) {
                 std::vector<Vector3> localLoop = closeLoopLocal(localPoints);
                 std::vector<Vector3> smoothedLocal = smoothClosedCurve3D(localLoop, smoothingFactor);
@@ -651,7 +651,7 @@ namespace casting {
                 extendedLocal = closeLoopLocal(extendedLocal);
                 if (stages) {
                     PartingSurfaceStage nonPlanarStage;
-                    nonPlanarStage.name = "非平面";
+                    nonPlanarStage.name = "Non-planar";
                     for (const auto& point : extendedLocal) {
                         nonPlanarStage.boundary.push_back(liftFromBasis(point, basis));
                     }
@@ -665,7 +665,7 @@ namespace casting {
                 return surface;
             }
 
-            // 7) 将二维边界抬升回三维，作为平面分型面边界
+            // 7) Lift the 2D boundary back to 3D as the planar parting-surface boundary.
             surface.boundary.clear();
             surface.boundary.reserve(extended.size());
             for (const auto& point : extended) {
@@ -711,7 +711,7 @@ namespace casting {
             PlaneBasis basis = buildPlaneBasis(contour.centroid, direction);
 
             if (stages) {
-                stages->push_back({ "最大轮廓", contour.boundary });
+                stages->push_back({ "Max contour", contour.boundary });
             }
 
             // Project the contour boundary to the 2D plane (z ≈ 0 by construction).
@@ -728,7 +728,7 @@ namespace casting {
 
             if (stages) {
                 PartingSurfaceStage extStage;
-                extStage.name = "外扩";
+                extStage.name = "Expanded";
                 for (const auto& point : extended) {
                     extStage.boundary.push_back(liftFromPlane(point, basis));
                 }
@@ -1006,7 +1006,7 @@ namespace casting {
             const Vector3& direction) {
             std::vector<InterferenceIssue> issues;
             if (surface.boundary.size() < 3) {
-                issues.push_back({ "分型面边界点数量不足。", 0.9 });
+                issues.push_back({ "Insufficient parting-surface boundary points.", 0.9 });
                 return issues;
             }
 
@@ -1024,12 +1024,12 @@ namespace casting {
             }
 
             if (distance2D(projected.front(), projected.back()) > kClosureTolerance) {
-                issues.push_back({ "分型面边界未闭合。", 0.7 });
+                issues.push_back({ "Parting-surface boundary is not closed.", 0.7 });
             }
 
             std::vector<Vector2> loop = closeLoop2D(projected);
             if (hasSelfIntersection2D(loop)) {
-                issues.push_back({ "分型面边界投影后发生自交。", 0.8 });
+                issues.push_back({ "Parting-surface boundary self-intersects after projection.", 0.8 });
             }
 
             if (loop.size() >= 4) {
@@ -1050,7 +1050,7 @@ namespace casting {
                     minAngle = std::min(minAngle, angle);
                 }
                 if (minAngle < 20.0) {
-                    issues.push_back({ "分型面边界存在尖角。", 0.5 });
+                    issues.push_back({ "Parting-surface boundary has sharp corners.", 0.5 });
                 }
             }
 
@@ -1064,7 +1064,7 @@ namespace casting {
                 Vector3 normal = normalized(accumulatedNormal);
                 double alignment = std::abs(dot(normal, normalized(direction)));
                 if (alignment < 0.95) {
-                    issues.push_back({ "分型面法向与脱模方向不一致。", 0.6 });
+                    issues.push_back({ "Parting-surface normal is inconsistent with demold direction.", 0.6 });
                 }
             }
 
@@ -1531,13 +1531,13 @@ namespace casting {
             check.pullPathClear = boundsContains(expandBounds(meshBounds, maxSize), core.geometryBounds);
 
             if (!check.minWallThicknessOk) {
-                check.messages.push_back("最小壁厚低于材质阈值。");
+                check.messages.push_back("Minimum wall thickness is below material threshold.");
             }
             if (!check.slendernessOk) {
-                check.messages.push_back("长径比超过 5。");
+                check.messages.push_back("Aspect ratio exceeds 5.");
             }
             if (!check.pullPathClear) {
-                check.messages.push_back("抽芯路径可能与周围结构干涉。");
+                check.messages.push_back("Core pull path may interfere with surrounding structures.");
             }
             return check;
         }
@@ -1557,7 +1557,7 @@ namespace casting {
             bool allowSegmentation = true) {
             SandCore core;
             core.id = idSeed;
-            core.nxBodyName = "砂芯_" + std::to_string(core.id);
+            core.nxBodyName = "SandCore_" + std::to_string(core.id);
 
             RegionSurfaceContact contact = analyzeRegionSurfaceContact(region, meshBounds);
             core.diagnostics.touchesExternalSurface = isExternalRegion(contact);
@@ -1572,7 +1572,7 @@ namespace casting {
             core.type = inferSandCoreType(core.diagnostics.touchesExternalSurface,
                 core.diagnostics.topology,
                 core.diagnostics.shape);
-            appendStageLog(&core.diagnostics, "区域判定完成。");
+            appendStageLog(&core.diagnostics, "Region classification completed.");
 
             Vector3 openingDirection = openDirectionFromContact(contact, region.bounds);
             bool hasOpeningDirection = length(openingDirection) > std::numeric_limits<double>::epsilon();
@@ -1580,7 +1580,7 @@ namespace casting {
                 core.diagnostics.touchesExternalSurface,
                 hasOpeningDirection,
                 openingDirection);
-            appendStageLog(&core.diagnostics, "抽芯方向计算完成。");
+            appendStageLog(&core.diagnostics, "Core pull direction computed.");
 
             DemoldEvaluation pullEval = evaluateRegionDirection(mesh, region.triangleIndices, core.pullDirection,
                 settings.draftAngleDegrees);
@@ -1588,13 +1588,13 @@ namespace casting {
             core.diagnostics.generationMethod = selectGenerationMethod(core.type, core.diagnostics.shape);
             core.geometryBounds = generateSandCoreGeometryBounds(region, core.pullDirection,
                 core.diagnostics.generationMethod, settings);
-            appendStageLog(&core.diagnostics, "几何生成完成。");
+            appendStageLog(&core.diagnostics, "Geometry generation completed.");
 
             bool ratioSplit = core.diagnostics.lengthWidthRatio > 5.0;
             bool curvatureSplit = core.diagnostics.centerlineMaxCurvatureDeg > 45.0;
             bool undercutSplit = core.diagnostics.hasUndercutAlongPull;
             core.diagnostics.requiresSegmentation = undercutSplit || ratioSplit || curvatureSplit;
-            appendStageLog(&core.diagnostics, "分块决策完成。");
+            appendStageLog(&core.diagnostics, "Split decision completed.");
 
             core.heads.push_back(buildCoreHead(core.geometryBounds, core.pullDirection,
                 core.diagnostics.touchesExternalSurface,
@@ -1606,10 +1606,10 @@ namespace casting {
                     core.diagnostics.boundaryConnectionCount,
                     settings, true));
             }
-            appendStageLog(&core.diagnostics, "芯头设计完成。");
+            appendStageLog(&core.diagnostics, "Core head design completed.");
 
             core.manufacturability = evaluateSandCoreManufacturability(core, meshBounds, settings.castingMaterial);
-            appendStageLog(&core.diagnostics, "可制造性检查完成。");
+            appendStageLog(&core.diagnostics, "Manufacturability check completed.");
 
             if (allowSegmentation && core.diagnostics.requiresSegmentation) {
                 auto splitBounds = splitBoundsAtMid(core.geometryBounds);
@@ -1621,14 +1621,14 @@ namespace casting {
                     demoldDirection, settings, idSeed * 10 + 1, false));
                 core.subCores.push_back(createSandCoreFromRegion(mesh, secondRegion, meshBounds,
                     demoldDirection, settings, idSeed * 10 + 2, false));
-                appendStageLog(&core.diagnostics, "已分块生成子芯。");
+                appendStageLog(&core.diagnostics, "Sub-cores generated by splitting.");
             }
 
             // Keep generated core bodies visually distinct while staying in a compact layer range.
             std::size_t visualKey = core.id * kVisualHashMultiplier;
             core.nxColor = kCoreColor + static_cast<int>(visualKey % kSandCoreColorVariants);
             core.nxLayer = kSandCoreBaseLayer + static_cast<int>(visualKey % kSandCoreLayerVariants);
-            appendStageLog(&core.diagnostics, "NX 输出映射完成。");
+            appendStageLog(&core.diagnostics, "NX output mapping completed.");
             return core;
         }
 
@@ -1839,7 +1839,7 @@ namespace casting {
             const std::vector<CoreRegion>& cores) {
             MoldAssembly assembly;
 
-            // 1) 计算与脱模方向对齐的包围盒，用于生成铸型毛坯
+            // 1) Compute direction-aligned bounding box to generate mold blanks.
             Vector3 planeOrigin = surface.boundary.empty() ? computeCentroid(mesh) : Vector3{};
             if (!surface.boundary.empty()) {
                 for (const auto& point : surface.boundary) {
@@ -1852,7 +1852,7 @@ namespace casting {
             double partThickness = std::max(0.0, partLocalBounds.max.z - partLocalBounds.min.z);
             double splitContainmentTolerance = std::max(kSplitPlaneContainmentTolerance,
                 partThickness * kSplitPlaneMinThicknessRatio);
-            // 若分型面平面落在零件外部（含容差），沿脱模方向将其拉回零件内部。
+            // If split plane lies outside the part (with tolerance), pull it back along demold direction.
             if (partLocalBounds.min.z > splitContainmentTolerance ||
                 partLocalBounds.max.z < -splitContainmentTolerance) {
                 double shift = (partLocalBounds.min.z + partLocalBounds.max.z) * 0.5;
@@ -1865,16 +1865,16 @@ namespace casting {
             }
             Bounds blankLocalBounds = expandLocalBounds(partLocalBounds, settings.moldBlankPadding);
 
-            // 2) 按收缩率放大产品模型，用于型腔减料。
-            // 铸件冷却时收缩，所以铸型型腔必须比零件略大（放大系数 = 1 + shrinkageFactor）
-            // 才能保证铸件冷却后与设计尺寸吻合。
+            // 2) Scale the product model by shrinkage for cavity subtraction.
+            // Castings shrink during cooling, so cavity must be larger (scale factor = 1 + shrinkageFactor)
+            // to match final dimensions after cooling.
             Vector3 localCenter{ (partLocalBounds.min.x + partLocalBounds.max.x) / 2.0,
                                 (partLocalBounds.min.y + partLocalBounds.max.y) / 2.0,
                                 (partLocalBounds.min.z + partLocalBounds.max.z) / 2.0 };
             Bounds scaledLocalBounds = scaleLocalBounds(partLocalBounds, localCenter,
                 1.0 + settings.shrinkageFactor);
 
-            // 3) 以分型面所在平面切分毛坯，得到上下型
+            // 3) Split blanks with the parting-surface plane into upper and lower molds.
             double splitCoordinate = 0.0;
             double splitLowerLimit = partLocalBounds.min.z + splitContainmentTolerance;
             double splitUpperLimit = partLocalBounds.max.z - splitContainmentTolerance;
@@ -1895,13 +1895,13 @@ namespace casting {
             lowerCavityLocal.max.z = std::min(lowerCavityLocal.max.z, splitCoordinate);
 
             MoldBlock upper;
-            upper.role = "上模";
+            upper.role = "Upper mold";
             upper.bounds = localBoundsToWorld(upperBlankLocal, basis);
             upper.cavityBounds = localBoundsToWorld(upperCavityLocal, basis);
             upper.pullDirection = normalized(direction);
 
             MoldBlock lower;
-            lower.role = "下模";
+            lower.role = "Lower mold";
             lower.bounds = localBoundsToWorld(lowerBlankLocal, basis);
             lower.cavityBounds = localBoundsToWorld(lowerCavityLocal, basis);
             lower.pullDirection = normalized(direction * -1.0);
@@ -1916,7 +1916,7 @@ namespace casting {
             assembly.overallBounds.max.y = std::max(assembly.overallBounds.max.y, lower.bounds.max.y);
             assembly.overallBounds.max.z = std::max(assembly.overallBounds.max.z, lower.bounds.max.z);
 
-            // 4) 根据倒扣区域生成砂芯、芯头和芯座的几何范围
+            // 4) Generate sand-core, core-head, and core-seat bounds from undercut regions.
             for (const auto& core : cores) {
                 CoreInsert insert;
                 insert.pullDirection = length(core.pullDirection) > std::numeric_limits<double>::epsilon()
@@ -1936,7 +1936,7 @@ namespace casting {
             std::size_t coreCount) {
             std::vector<StrategyOption> options;
             StrategyOption baseline;
-            baseline.name = "默认多分型";
+            baseline.name = "Default multi-parting";
             baseline.score = report.score -
                 static_cast<double>(report.obstacles.size()) * kStrategyObstaclePenalty -
                 static_cast<double>(coreCount) * kStrategyCorePenalty;
@@ -1946,7 +1946,7 @@ namespace casting {
             options.push_back(baseline);
 
             StrategyOption conservative = baseline;
-            conservative.name = "优先砂芯";
+            conservative.name = "Core-priority";
             conservative.score -= static_cast<double>(coreCount) * kStrategyCorePreferencePenalty;
             options.push_back(conservative);
             return options;
@@ -1959,7 +1959,7 @@ namespace casting {
             const MoldAssembly& assembly) {
             std::vector<InterferenceIssue> issues;
             if (line.points.empty()) {
-                issues.push_back({ "分型线提取未得到边界点。", 0.8 });
+                issues.push_back({ "Parting-line extraction returned no boundary points.", 0.8 });
             }
             std::vector<InterferenceIssue> surfaceIssues =
                 checkPartingSurfaceQuality(surface, evaluation.direction);
@@ -1973,19 +1973,19 @@ namespace casting {
             double overlapZ = std::min(upperBounds.max.z, lowerBounds.max.z) -
                 std::max(upperBounds.min.z, lowerBounds.min.z);
             if (overlapX > kOverlapTolerance && overlapY > kOverlapTolerance && overlapZ > kOverlapTolerance) {
-                issues.push_back({ "上下模包围盒发生重叠，请检查分割平面与分型面。",
+                issues.push_back({ "Upper/lower mold bounding boxes overlap; check split plane and parting surface.",
                                   0.6 });
             }
             if (evaluation.undercutRatio > kUndercutWarningRatio) {
-                issues.push_back({ "倒扣比例超过阈值，建议调整脱模方向。",
+                issues.push_back({ "Undercut ratio exceeds threshold; adjust demold direction.",
                                   std::min(1.0, evaluation.undercutRatio) });
             }
             if (mesh.triangles.empty()) {
-                issues.push_back({ "预处理后网格无有效三角面。", 1.0 });
+                issues.push_back({ "No valid triangles remain after preprocessing.", 1.0 });
             }
             for (const auto& core : assembly.cores) {
                 if (!boundsContains(assembly.overallBounds, core.seatBounds)) {
-                    issues.push_back({ "芯座超出模具毛坯范围，请调整芯头或留量。",
+                    issues.push_back({ "Core seat exceeds mold stock bounds; adjust core head or allowance.",
                                       0.5 });
                 }
             }
@@ -2035,7 +2035,7 @@ namespace casting {
             settings, &result.cores);
         Bounds meshBounds = computeBounds(result.cleanedMesh);
         std::vector<std::size_t> keptCoreIds;
-        // 根据体积占比与数量限制筛减砂芯，尽量减少砂芯数量
+        // Reduce sand-core candidates by volume ratio and count limits to minimize core count.
         result.cores = filterCoreRegions(result.cores, meshBounds, settings, &keptCoreIds);
         if (!keptCoreIds.empty()) {
             std::unordered_set<std::size_t> keptSet(keptCoreIds.begin(), keptCoreIds.end());

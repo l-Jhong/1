@@ -92,7 +92,7 @@ bool appendBoundingBoxMesh(tag_t bodyTag, casting::Mesh* mesh) {
         return false;
     }
 
-    // 使用体的包围盒尺寸生成简化盒形网格，保证不同零件有不同的输入几何
+    // Build a simplified box mesh from body bounds so each part yields unique input geometry.
     double xmin = box[0];
     double ymin = box[1];
     double zmin = box[2];
@@ -125,7 +125,7 @@ bool appendBoundingBoxMesh(tag_t bodyTag, casting::Mesh* mesh) {
     return true;
 }
 
-// outSolidCount / outSheetCount 可为 nullptr，调用方不需要统计时传入 nullptr
+// outSolidCount / outSheetCount can be nullptr when the caller does not need counts.
 casting::Mesh buildMeshFromWorkPart(BasePart* workPart,
                                     bool* outUsedSheetBodies = nullptr,
                                     int*  outSolidCount     = nullptr,
@@ -139,7 +139,7 @@ casting::Mesh buildMeshFromWorkPart(BasePart* workPart,
         return mesh;
     }
 
-    // 读取当前工作部件的体，生成用于分析的网格
+    // Read bodies from the current work part and build analysis mesh.
     NXOpen::Part* part = resolveWorkPart(workPart);
     if (!part) {
         return mesh;
@@ -149,7 +149,7 @@ casting::Mesh buildMeshFromWorkPart(BasePart* workPart,
         return mesh;
     }
 
-    // 第一遍：仅处理实体（solid body）
+    // First pass: process solid bodies only.
     std::vector<NXOpen::Body*> sheetBodies;
     for (NXOpen::Body* body : *bodyCollection) {
         if (!body) {
@@ -164,7 +164,7 @@ casting::Mesh buildMeshFromWorkPart(BasePart* workPart,
         }
     }
 
-    // 第二遍：若无实体，回退到所有体（面片体，来自 STEP/STL 等中间格式）
+    // Second pass: if no solids exist, fall back to all bodies (sheet bodies from STEP/STL etc.).
     if (mesh.triangles.empty()) {
         for (NXOpen::Body* body : sheetBodies) {
             if (!body) {
@@ -177,7 +177,7 @@ casting::Mesh buildMeshFromWorkPart(BasePart* workPart,
         }
     }
 
-    // 如果仍未获取到任何网格，则退回到示例网格
+    // If no mesh can still be built, fall back to a demo mesh.
     if (mesh.triangles.empty()) {
         mesh = buildDemoMesh(10.0);
     }
@@ -427,13 +427,13 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
         }
     }
 
-    // 通过“矩形轮廓 + 拉伸”生成与包围盒同尺寸的实体；若失败返回 nullptr。
+    // Build a solid matching the bounds via "rectangular profile + extrusion"; return nullptr on failure.
     auto createBlock = [](const casting::Bounds& bounds, int color) -> NXOpen::Body* {
         return createExtrudedRectangularSolid(bounds, color);
     };
 
-    // 使用不同颜色展示上、下模（仅显示，不输出文件）
-    // 只有在包围盒成功生成后，才可对该 tag 进行后续布尔运算
+    // Display upper/lower molds with different colors (display only, no file export).
+    // Continue boolean operations on the tag only when bound solids are created successfully.
     NXOpen::Body* upperBody = nullptr;
     NXOpen::Body* lowerBody = nullptr;
     if (assembly.blocks.size() >= 2) {
@@ -441,13 +441,13 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
         lowerBody = createBlock(assembly.blocks[1].bounds, casting::kLowerMoldColor);
     }
 
-    // 仅在上下模包围盒均已成功生成的前提下，才创建砂芯几何（避免对空体执行布尔运算）
+    // Create sand-core geometry only when both upper/lower mold blanks were created.
     if (!upperBody || !lowerBody) {
         return;
     }
 
-    // 按收缩率放大的零件型腔（cavityBounds）从上下模坯料中布尔减去，得到实际铸型。
-    // 统一通过 NXOpen Boolean Builder：目标体 + 工具体 + 操作类型（Subtract）。
+    // Subtract shrinkage-scaled cavity bounds from upper/lower blanks to get final mold geometry.
+    // Use NXOpen Boolean Builder consistently: target + tool + operation type (Subtract).
     if (!partToolBodies.empty()) {
         if (assembly.blocks[0].subtractPart) {
             for (NXOpen::Body* toolBody : partToolBodies) {
@@ -519,57 +519,57 @@ void MyClass::showSandCores(const std::vector<casting::SandCore>& sandCores) {
 void MyClass::do_it() {
     casting::AutoPartingPipeline pipeline;
 
-    // 优先使用当前零件的几何数据，避免不同零件得到相同结果
+    // Prefer geometry from the current part to avoid identical results across different parts.
     bool usedSheetBodies = false;
     int  solidCount      = 0;
     int  sheetCount      = 0;
     casting::Mesh mesh = buildMeshFromWorkPart(workPart, &usedSheetBodies,
                                                &solidCount, &sheetCount);
 
-    // 打印体类型统计，帮助用户确认当前零件的几何状态
+    // Print body-type statistics to help confirm current part geometry state.
     stringstream bodyStats;
-    bodyStats << "体统计 — 实体: " << solidCount << " | 片体: " << sheetCount;
+    bodyStats << "Body stats - solids: " << solidCount << " | sheets: " << sheetCount;
     print(bodyStats.str());
 
-    // 若当前零件只含面片体（来自 STEP/STL 等中间格式），给出友好提示
+    // Show a friendly hint when the current part contains sheet bodies only.
     if (usedSheetBodies) {
-        print("警告：未找到实体体，当前将在片体上执行分析（来自 STEP/STL）。"
-              "如需完整模具操作，请先使用缝合或加厚命令将其转换为实体。");
+        print("Warning: no solid body found; analysis will run on sheet bodies (from STEP/STL). "
+              "For full mold operations, convert to solid first (for example, sew or thicken).");
     }
 
     casting::AutoPartingResult result = pipeline.run(mesh);
 
     stringstream stream;
-    stream << "脱模方向: (" << result.demold.direction.x << ", "
+    stream << "Demold direction: (" << result.demold.direction.x << ", "
            << result.demold.direction.y << ", " << result.demold.direction.z << ")";
     print(stream.str());
 
     stream.str("");
     stream.clear();
-    stream << "可见性比例: " << result.demold.visibilityRatio
-           << " | 倒扣比例: " << result.demold.undercutRatio;
+    stream << "Visibility ratio: " << result.demold.visibilityRatio
+           << " | Undercut ratio: " << result.demold.undercutRatio;
     print(stream.str());
 
     stream.str("");
     stream.clear();
-    stream << "分型线点数: " << result.partingLine.points.size()
-           << " | 芯区域数量: " << result.cores.size()
-           << " | 砂芯数量: " << result.sandCores.size();
+    stream << "Parting line points: " << result.partingLine.points.size()
+           << " | Core regions: " << result.cores.size()
+           << " | Sand cores: " << result.sandCores.size();
     print(stream.str());
 
     stream.str("");
     stream.clear();
-    stream << "可分离性: " << (result.separability.separable ? "可分离" : "不可分离")
-           << " | 障碍数量: " << result.separability.obstacles.size()
-           << " | 最大轮廓面积: " << result.maxContour.area;
+    stream << "Separability: " << (result.separability.separable ? "separable" : "not separable")
+           << " | Obstacles: " << result.separability.obstacles.size()
+           << " | Max contour area: " << result.maxContour.area;
     print(stream.str());
 
     stream.str("");
     stream.clear();
-    stream << "轮廓来源: " << (result.maxContour.selectedFromSlice ? "切片" : "回退")
-           << " | 切片索引: " << result.maxContour.selectedSliceIndex
-           << " | 局部W: " << result.maxContour.selectedSliceW
-           << " | 是否回退: " << (result.maxContour.fallbackUsed ? "是" : "否");
+    stream << "Contour source: " << (result.maxContour.selectedFromSlice ? "slice" : "fallback")
+           << " | Slice index: " << result.maxContour.selectedSliceIndex
+           << " | Local W: " << result.maxContour.selectedSliceW
+           << " | Used fallback: " << (result.maxContour.fallbackUsed ? "yes" : "no");
     print(stream.str());
 
     highlightPartingSurface(result.partingSurface.boundary);
@@ -583,8 +583,8 @@ void MyClass::do_it() {
 //  Explicit Execution
 extern "C" DllExport void ufusr(char* parm, int* returnCode, int rlen) {
     if (UF_initialize() != 0) {
-        UI::GetUI()->NXMessageBox()->Show("UF 错误", NXOpen::NXMessageBox::DialogTypeError,
-                                          "UF_initialize 初始化失败。");
+        UI::GetUI()->NXMessageBox()->Show("UF Error", NXOpen::NXMessageBox::DialogTypeError,
+                                          "UF_initialize failed.");
         return;
     }
     try {
@@ -594,14 +594,14 @@ extern "C" DllExport void ufusr(char* parm, int* returnCode, int rlen) {
         theMyClass->do_it();
         delete theMyClass;
     } catch (const NXException& e1) {
-        UI::GetUI()->NXMessageBox()->Show("NX 异常", NXOpen::NXMessageBox::DialogTypeError,
+        UI::GetUI()->NXMessageBox()->Show("NX Exception", NXOpen::NXMessageBox::DialogTypeError,
                                           e1.Message());
     } catch (const exception& e2) {
-        UI::GetUI()->NXMessageBox()->Show("异常", NXOpen::NXMessageBox::DialogTypeError,
+        UI::GetUI()->NXMessageBox()->Show("Exception", NXOpen::NXMessageBox::DialogTypeError,
                                           e2.what());
     } catch (...) {
-        UI::GetUI()->NXMessageBox()->Show("异常", NXOpen::NXMessageBox::DialogTypeError,
-                                          "未知异常。");
+        UI::GetUI()->NXMessageBox()->Show("Exception", NXOpen::NXMessageBox::DialogTypeError,
+                                          "Unknown exception.");
     }
     UF_terminate();
 }
