@@ -6,14 +6,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-if(MSVC)
-    add_compile_options(/utf-8)
-endif()
-
 add_library(casting_auto_parting
     src/AutoPartingPipeline.cpp
     src/Geometry.cpp
 )
+if(MSVC)
+    target_compile_options(casting_auto_parting PRIVATE /utf-8)
+endif()
 
 target_include_directories(casting_auto_parting
     PUBLIC
@@ -23,6 +22,9 @@ target_include_directories(casting_auto_parting
 
 add_executable(casting_auto_parting_demo src/main.cpp)
 target_link_libraries(casting_auto_parting_demo PRIVATE casting_auto_parting)
+if(MSVC)
+    target_compile_options(casting_auto_parting_demo PRIVATE /utf-8)
+endif()
 
 option(NXOPEN_ENABLED "Build NXOpen entry point" OFF)
 set(NXOPEN_ROOT_DIR "" CACHE PATH "NX installation root directory (contains UGOPEN)")
@@ -58,6 +60,9 @@ if(NXOPEN_ENABLED)
     endif()
 
     add_library(casting_auto_parting_nxopen SHARED src/NXOpenEntry.cpp)
+    if(MSVC)
+        target_compile_options(casting_auto_parting_nxopen PRIVATE /utf-8)
+    endif()
     target_include_directories(casting_auto_parting_nxopen
         PRIVATE
             ${NXOPEN_INCLUDE_DIR}
