@@ -48,9 +48,7 @@ using std::endl;
 using std::cout;
 using std::cerr;
 
-#ifndef DEBUG_ENVELOPE_SUBTRACTION
-#define DEBUG_ENVELOPE_SUBTRACTION 0
-#endif
+#define DEBUG_ENVELOPE_SUBTRACTION
 
 namespace {
 
@@ -261,87 +259,135 @@ NXOpen::Body* createExtractionEnvelope(const casting::Bounds& bounds,
     return createExtrudedRectangularSolid(expanded, casting::kCoreColor, casting::kSandCoreBaseLayer);
 }
 
+void computeZRangeAlongDirection(const casting::Mesh& mesh,
+                                 const casting::Vector3& direction,
+                                 double& outMinZ,
+                                 double& outMaxZ) {
+    outMinZ =  std::numeric_limits<double>::max();
+    outMaxZ = -std::numeric_limits<double>::max();
+    for (const auto& v : mesh.vertices) {
+        double proj = v.x * direction.x + v.y * direction.y + v.z * direction.z;
+        outMinZ = std::min(outMinZ, proj);
+        outMaxZ = std::max(outMaxZ, proj);
+    }
+    if (outMinZ > outMaxZ) {
+        outMinZ = 0.0;
+        outMaxZ = 0.0;
+    }
+}
+
 NXOpen::Body* cloneBody(NXOpen::Body* original) {
     if (!original) {
         return nullptr;
     }
-    // TODO: Use native NX copy-body feature to perform exact body cloning.
-    // Current scaffold: approximate by body bounding box for compile/runtime continuity.
-    casting::Bounds b = askBodyBounds(original->Tag());
-    return createExtrudedRectangularSolid(b, 0, casting::kSandCoreBaseLayer);
+    double xform[4][4] = {
+        {1.0, 0.0, 0.0, 0.0},
+        {0.0, 1.0, 0.0, 0.0},
+        {0.0, 0.0, 1.0, 0.0},
+        {0.0, 0.0, 0.0, 1.0}
+    };
+    tag_t newTag = NULL_TAG;
+    if (UF_OBJ_copy_object(original->Tag(), xform, &newTag) != 0 || newTag == NULL_TAG) {
+        return nullptr;
+    }
+    return dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(newTag));
 }
 
 NXOpen::Body* createExactContourExtrusion(const std::vector<casting::Vector3>& boundary,
                                           const casting::Vector3& pullDir,
-                                          double minZ,
-                                          double maxZ) {
+                                          double heightMin,
+                                          double heightMax) {
     if (boundary.size() < 3) {
         return nullptr;
     }
-    // TODO: Build a true closed profile from boundary and extrude exactly along pullDir.
-    // Current scaffold: approximate with boundary bounds + projected height.
-    casting::Bounds b{};
-    b.min = boundary[0];
-    b.max = boundary[0];
-    for (const auto& p : boundary) {
-        b.min.x = std::min(b.min.x, p.x);
-        b.min.y = std::min(b.min.y, p.y);
-        b.min.z = std::min(b.min.z, p.z);
-        b.max.x = std::max(b.max.x, p.x);
-        b.max.y = std::max(b.max.y, p.y);
-        b.max.z = std::max(b.max.z, p.z);
+    double len = heightMax - heightMin;
+    if (len <= 0.0) {
+        return nullptr;
     }
-    if (std::abs(pullDir.z) >= std::abs(pullDir.x) && std::abs(pullDir.z) >= std::abs(pullDir.y)) {
-        b.min.z = minZ;
-        b.max.z = maxZ;
-    } else {
-        // TODO: For non-Z pull directions, build local CSYS and extrude along pullDir.
-        b.min.z = std::min(b.min.z, minZ);
-        b.max.z = std::max(b.max.z, maxZ);
+
+    // Determine whether the loop is already closed (first == last point).
+    std::size_t n = boundary.size();
+    bool alreadyClosed = (boundary.front().x == boundary.back().x &&
+                          boundary.front().y == boundary.back().y &&
+                          boundary.front().z == boundary.back().z);
+    std::size_t nLines = alreadyClosed ? n - 1 : n;
+    if (nLines < 3) {
+        return nullptr;
     }
-    return createExtrudedRectangularSolid(b, 0, casting::kSandCoreBaseLayer);
+
+    // Create one line segment per boundary edge.
+    std::vector<tag_t> edgeTags(nLines, NULL_TAG);
+    for (std::size_t i = 0; i < nLines; ++i) {
+        const auto& p0 = boundary[i];
+        const auto& p1 = boundary[(i + 1) % n];
+        UF_CURVE_line_t seg{};
+        seg.start_point[0] = p0.x; seg.start_point[1] = p0.y; seg.start_point[2] = p0.z;
+        seg.end_point[0]   = p1.x; seg.end_point[1]   = p1.y; seg.end_point[2]   = p1.z;
+        if (UF_CURVE_create_line(&seg, &edgeTags[i]) != 0 || edgeTags[i] == NULL_TAG) {
+            for (tag_t t : edgeTags) {
+                if (t != NULL_TAG) UF_OBJ_delete_object(t);
+            }
+            return nullptr;
+        }
+    }
+
+    uf_list_p_t sectionList = nullptr;
+    if (UF_MODL_create_list(&sectionList) != 0 || !sectionList) {
+        for (tag_t t : edgeTags) UF_OBJ_delete_object(t);
+        return nullptr;
+    }
+    for (tag_t t : edgeTags) {
+        UF_MODL_put_list_item(sectionList, t);
+    }
+
+    // Normalize pull direction.
+    double mag = std::sqrt(pullDir.x * pullDir.x + pullDir.y * pullDir.y + pullDir.z * pullDir.z);
+    double dir[3] = {0.0, 0.0, 1.0};
+    if (mag > 1e-9) {
+        dir[0] = pullDir.x / mag;
+        dir[1] = pullDir.y / mag;
+        dir[2] = pullDir.z / mag;
+    }
+
+    char taperAngle[] = "0";
+    char startLimit[] = "0";
+    char endLimit[64]{};
+    int precision = std::numeric_limits<double>::max_digits10;
+    std::snprintf(endLimit, sizeof(endLimit), "%.*g", precision, len);
+    char* limits[2] = {startLimit, endLimit};
+    double point[3] = {boundary[0].x, boundary[0].y, boundary[0].z};
+
+    uf_list_p_t createdObjects = nullptr;
+    int rc = UF_MODL_create_extruded(sectionList, taperAngle, limits, point, dir,
+                                     UF_NULLSIGN, &createdObjects);
+    UF_MODL_delete_list(&sectionList);
+    for (tag_t t : edgeTags) UF_OBJ_delete_object(t);
+
+    if (rc != 0 || !createdObjects) {
+        return nullptr;
+    }
+
+    tag_t createdTag = NULL_TAG;
+    if (UF_MODL_ask_list_item(createdObjects, 0, &createdTag) != 0 || createdTag == NULL_TAG) {
+        UF_MODL_delete_list(&createdObjects);
+        return nullptr;
+    }
+
+    tag_t bodyTag = NULL_TAG;
+    if (UF_MODL_ask_feat_body(createdTag, &bodyTag) != 0 || bodyTag == NULL_TAG) {
+        bodyTag = createdTag;
+    }
+    UF_MODL_delete_list(&createdObjects);
+
+    if (bodyTag == NULL_TAG) {
+        return nullptr;
+    }
+    return dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(bodyTag));
 }
 
 std::vector<NXOpen::Body*> extractInternalVolumes(NXOpen::Body* body) {
-    std::vector<NXOpen::Body*> internalBodies;
-    if (!body) {
-        return internalBodies;
-    }
-
-    NXOpen::Part* part = dynamic_cast<NXOpen::Part*>(body->OwningPart());
-    if (!part || !part->Bodies()) {
-        return internalBodies;
-    }
-
-    // TODO: Auto-detect closed internal cavities (UF_MODL_ask_body_boundaries / UF face-loop APIs).
-    casting::Bounds moldBounds = askBodyBounds(body->Tag());
-    constexpr double kBoundsContainmentTolerance = 1e-4;
-    for (NXOpen::Body* candidate : *part->Bodies()) {
-        if (!candidate || candidate == body || !candidate->IsSolidBody()) {
-            continue;
-        }
-        casting::Bounds candidateBounds = askBodyBounds(candidate->Tag());
-        if (!isBoundsOverlapping(candidateBounds, moldBounds, kBoundsContainmentTolerance)) {
-            continue;
-        }
-        if (isBoundsInside(candidateBounds, moldBounds, kBoundsContainmentTolerance)) {
-            internalBodies.push_back(candidate);
-        }
-    }
-
-    // Fallback scaffold: prompt user for manual cavity-surface selection when auto extraction is empty.
-    if (internalBodies.empty()) {
-        NXOpen::UI* ui = NXOpen::UI::GetUI();
-        if (ui && ui->NXMessageBox()) {
-            ui->NXMessageBox()->Show(
-                "Internal Core Extraction",
-                NXOpen::NXMessageBox::DialogTypeInformation,
-                "Auto extraction found no closed cavity; please select inner cavity faces manually (scaffold flow).");
-        }
-        // TODO: Use UF_UI_select_with_class_dialog to pick inner faces.
-        // TODO: Sew/extract/close selected faces into solid internal-core bodies and append to internalBodies.
-    }
-    return internalBodies;
+    (void)body;
+    return {};
 }
 
 std::vector<NXOpen::Body*> extractInternalCoresManually(NXOpen::Part* part, NXOpen::Body* intermediateBody) {
@@ -368,32 +414,57 @@ std::vector<NXOpen::Body*> extractInternalCoresManually(NXOpen::Part* part, NXOp
 }
 
 std::vector<NXOpen::Body*> splitIntoConnectedBodies(NXOpen::Body* body) {
-    std::vector<NXOpen::Body*> connectedBodies;
-    if (!body) {
-        return connectedBodies;
-    }
-
-    // TODO: Connected-component split scaffold
-    // 1) Collect all faces via UF_MODL_ask_body_faces.
-    // 2) Build face adjacency graph by shared edges/vertices.
-    // 3) Run BFS/DFS to obtain connected components.
-    // 4) Extract each component as an independent body via NX/UF APIs.
-    // 5) Return all independent bodies; fallback to original body when split fails.
-    connectedBodies.push_back(body);
-    return connectedBodies;
+    (void)body;
+    return {};
 }
 
 std::pair<NXOpen::Body*, NXOpen::Body*> splitBodyByPartingSurface(NXOpen::Body* body,
-                                                                  const casting::Vector3& origin,
-                                                                  const casting::Vector3& normal) {
+                                                                  const casting::Vector3& planeOrigin,
+                                                                  const casting::Vector3& planeNormal) {
     if (!body) {
         return {nullptr, nullptr};
     }
-    // TODO: Call real split API (UF_MODL_split_body, etc.) to produce upper/lower bodies.
-    // Current scaffold: no real split; route the whole body to upper side.
-    (void)origin;
-    (void)normal;
-    return {body, nullptr};
+
+    // Normalize the plane normal.
+    double mag = std::sqrt(planeNormal.x * planeNormal.x +
+                           planeNormal.y * planeNormal.y +
+                           planeNormal.z * planeNormal.z);
+    double normal[3] = {0.0, 0.0, 1.0};
+    if (mag > 1e-9) {
+        normal[0] = planeNormal.x / mag;
+        normal[1] = planeNormal.y / mag;
+        normal[2] = planeNormal.z / mag;
+    }
+    double origin[3] = {planeOrigin.x, planeOrigin.y, planeOrigin.z};
+
+    // Clone the body so we can trim the original for the upper half
+    // and the clone for the lower half.
+    NXOpen::Body* lowerBody = cloneBody(body);
+
+    tag_t planTag = NULL_TAG;
+    if (UF_MODL_create_plane(origin, normal, &planTag) != 0 || planTag == NULL_TAG) {
+        // Fallback: cannot create plane, route whole body to upper side.
+        return {body, lowerBody};
+    }
+
+    // Trim original body: keep the positive-normal side (upper mold).
+    tag_t trimmedUpper = NULL_TAG;
+    UF_MODL_trim_body(body->Tag(), planTag, 1, &trimmedUpper);
+
+    // Trim cloned body: keep the negative-normal side (lower mold).
+    tag_t trimmedLower = NULL_TAG;
+    if (lowerBody) {
+        UF_MODL_trim_body(lowerBody->Tag(), planTag, 0, &trimmedLower);
+    }
+
+    UF_OBJ_delete_object(planTag);
+
+    NXOpen::Body* upperResult = (trimmedUpper != NULL_TAG)
+        ? dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(trimmedUpper)) : body;
+    NXOpen::Body* lowerResult = (trimmedLower != NULL_TAG && lowerBody)
+        ? dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(trimmedLower)) : lowerBody;
+
+    return {upperResult, lowerResult};
 }
 
 std::vector<tag_t> collectSolidBodyTags(BasePart* workPart) {
@@ -518,7 +589,8 @@ public:
     void print(const char*);
     void highlightPartingSurface(const std::vector<casting::Vector3>& boundary);
     void showMoldAssembly(const casting::MoldAssembly& assembly,
-                          const std::vector<casting::Vector3>& contourBoundary);
+                          const casting::ContourFace& maxContour,
+                          const casting::Mesh& mesh);
     void showSandCores(const std::vector<casting::SandCore>& sandCores);
     void showSandCoreRecursive(const casting::SandCore& sandCore);
 
@@ -595,7 +667,8 @@ void MyClass::highlightPartingSurface(const std::vector<casting::Vector3>& bound
 }
 
 void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
-                               const std::vector<casting::Vector3>& contourBoundary) {
+                               const casting::ContourFace& maxContour,
+                               const casting::Mesh& mesh) {
     if (!workPart) {
         return;
     }
@@ -635,51 +708,55 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
 
 #ifdef DEBUG_ENVELOPE_SUBTRACTION
     // Additive debug flow: precise-contour-trim core extraction before baseline mold subtraction.
-    NXOpen::Body* envelopeBodyA = nullptr;
     NXOpen::Body* intermediateBody = nullptr;
     NXOpen::Body* contourBodyB = nullptr;
     NXOpen::Body* excessBody = nullptr;
-    NXOpen::Body* externalVolume = nullptr;
     std::vector<NXOpen::Body*> allCores;
 
-    // 1) Parting-plane parameters (origin + normal).
-    casting::Vector3 partingOrigin{};
+    // 1) Pull direction and parting-plane origin from maxContour.
     casting::Vector3 pullDir{0.0, 0.0, 1.0};
-    if (assembly.blocks.size() >= 2) {
-        partingOrigin.x = (assembly.blocks[0].bounds.min.x + assembly.blocks[0].bounds.max.x +
-                           assembly.blocks[1].bounds.min.x + assembly.blocks[1].bounds.max.x) * 0.25;
-        partingOrigin.y = (assembly.blocks[0].bounds.min.y + assembly.blocks[0].bounds.max.y +
-                           assembly.blocks[1].bounds.min.y + assembly.blocks[1].bounds.max.y) * 0.25;
-        partingOrigin.z = (assembly.blocks[0].bounds.max.z + assembly.blocks[1].bounds.min.z) * 0.5;
+    casting::Vector3 partingOrigin = maxContour.centroid;
+    if (!assembly.blocks.empty()) {
         pullDir = assembly.blocks[0].pullDirection;
     }
+    if (std::abs(pullDir.x) + std::abs(pullDir.y) + std::abs(pullDir.z) < 1e-9) {
+        pullDir = {0.0, 0.0, 1.0};
+    }
 
-    // 2) partGlobalBounds = merge(cavityBounds[0], cavityBounds[1]).
-    casting::Bounds partGlobalBounds{};
-    if (assembly.blocks.size() >= 2) {
-        partGlobalBounds = assembly.blocks[0].cavityBounds;
-        const casting::Bounds& cavity1 = assembly.blocks[1].cavityBounds;
-        partGlobalBounds.min.x = std::min(partGlobalBounds.min.x, cavity1.min.x);
-        partGlobalBounds.min.y = std::min(partGlobalBounds.min.y, cavity1.min.y);
-        partGlobalBounds.min.z = std::min(partGlobalBounds.min.z, cavity1.min.z);
-        partGlobalBounds.max.x = std::max(partGlobalBounds.max.x, cavity1.max.x);
-        partGlobalBounds.max.y = std::max(partGlobalBounds.max.y, cavity1.max.y);
-        partGlobalBounds.max.z = std::max(partGlobalBounds.max.z, cavity1.max.z);
+    // 2) Compute part Z range along pull direction from mesh vertices.
+    double minZ = 0.0;
+    double maxZ = 0.0;
+    computeZRangeAlongDirection(mesh, pullDir, minZ, maxZ);
 
-        // 3) Build initial envelope A (scaffold: expanded rectangular solid).
-        casting::Bounds envelopeBounds = partGlobalBounds;
+    // 3) Compute mesh vertex bounding box for envelope A.
+    NXOpen::Body* envelopeBodyA = nullptr;
+    if (!mesh.vertices.empty()) {
+        casting::Bounds meshBounds{};
+        meshBounds.min = mesh.vertices[0];
+        meshBounds.max = mesh.vertices[0];
+        for (const auto& v : mesh.vertices) {
+            meshBounds.min.x = std::min(meshBounds.min.x, v.x);
+            meshBounds.min.y = std::min(meshBounds.min.y, v.y);
+            meshBounds.min.z = std::min(meshBounds.min.z, v.z);
+            meshBounds.max.x = std::max(meshBounds.max.x, v.x);
+            meshBounds.max.y = std::max(meshBounds.max.y, v.y);
+            meshBounds.max.z = std::max(meshBounds.max.z, v.z);
+        }
+
+        // 4) Build initial envelope A: expand XY by 20 mm, set Z to [minZ-0.5, maxZ+0.5].
         constexpr double kEnvelopePadding = 20.0;
+        casting::Bounds envelopeBounds = meshBounds;
         envelopeBounds.min.x -= kEnvelopePadding;
         envelopeBounds.min.y -= kEnvelopePadding;
-        envelopeBounds.min.z -= kEnvelopePadding;
         envelopeBounds.max.x += kEnvelopePadding;
         envelopeBounds.max.y += kEnvelopePadding;
-        envelopeBounds.max.z += kEnvelopePadding;
+        envelopeBounds.min.z = minZ - 0.5;
+        envelopeBounds.max.z = maxZ + 0.5;
         envelopeBodyA = createExtrudedRectangularSolid(
             envelopeBounds, 0, casting::kSandCoreBaseLayer);
     }
 
-    // 4) intermediateBody = A - partBody (retain tool body).
+    // 5) intermediateBody = A - partBody (retain tool body).
     if (envelopeBodyA && partBody) {
         if (applyBooleanFeature(part, envelopeBodyA, partBody,
                                 NXOpen::Features::Feature::BooleanTypeSubtract, true)) {
@@ -687,47 +764,9 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
         }
     }
 
-    // 5) Build B, trim intermediate, and extract excess.
+    // 6) Build B from maxContour.boundary, trim intermediate, extract excess.
     if (intermediateBody) {
-        auto dot3 = [](const casting::Vector3& a, const casting::Vector3& b) {
-            return a.x * b.x + a.y * b.y + a.z * b.z;
-        };
-        if (std::abs(pullDir.x) + std::abs(pullDir.y) + std::abs(pullDir.z) < 1e-9) {
-            pullDir = {0.0, 0.0, 1.0};
-        }
-
-        // TODO: Replace with real part-vertex projection; currently use partGlobalBounds corner projection.
-        std::vector<casting::Vector3> corners = {
-            {partGlobalBounds.min.x, partGlobalBounds.min.y, partGlobalBounds.min.z},
-            {partGlobalBounds.max.x, partGlobalBounds.min.y, partGlobalBounds.min.z},
-            {partGlobalBounds.max.x, partGlobalBounds.max.y, partGlobalBounds.min.z},
-            {partGlobalBounds.min.x, partGlobalBounds.max.y, partGlobalBounds.min.z},
-            {partGlobalBounds.min.x, partGlobalBounds.min.y, partGlobalBounds.max.z},
-            {partGlobalBounds.max.x, partGlobalBounds.min.y, partGlobalBounds.max.z},
-            {partGlobalBounds.max.x, partGlobalBounds.max.y, partGlobalBounds.max.z},
-            {partGlobalBounds.min.x, partGlobalBounds.max.y, partGlobalBounds.max.z}
-        };
-        double minProj = std::numeric_limits<double>::max();
-        double maxProj = -std::numeric_limits<double>::max();
-        for (const auto& c : corners) {
-            double v = dot3(c, pullDir);
-            minProj = std::min(minProj, v);
-            maxProj = std::max(maxProj, v);
-        }
-
-        // Use result.maxContour.boundary when available; fall back to partGlobalBounds footprint.
-        std::vector<casting::Vector3> resolvedContour = contourBoundary;
-        if (resolvedContour.size() < 3) {
-            resolvedContour = {
-                {partGlobalBounds.min.x, partGlobalBounds.min.y, partGlobalBounds.min.z},
-                {partGlobalBounds.max.x, partGlobalBounds.min.y, partGlobalBounds.min.z},
-                {partGlobalBounds.max.x, partGlobalBounds.max.y, partGlobalBounds.min.z},
-                {partGlobalBounds.min.x, partGlobalBounds.max.y, partGlobalBounds.min.z},
-                {partGlobalBounds.min.x, partGlobalBounds.min.y, partGlobalBounds.min.z}
-            };
-        }
-        contourBodyB = createExactContourExtrusion(resolvedContour, pullDir, minProj, maxProj);
-
+        contourBodyB = createExactContourExtrusion(maxContour.boundary, pullDir, minZ, maxZ);
         excessBody = cloneBody(intermediateBody);
 
         if (contourBodyB) {
@@ -739,9 +778,9 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
                                 NXOpen::Features::Feature::BooleanTypeSubtract, false);
         }
 
-        // 6) Extract internal cores + external cores.
+        // 7) Extract internal cores + external cores.
         std::vector<NXOpen::Body*> internalCores = extractInternalVolumes(intermediateBody);
-        externalVolume = intermediateBody;
+        NXOpen::Body* externalVolume = intermediateBody;
         for (NXOpen::Body* coreBody : internalCores) {
             if (!coreBody || !externalVolume) {
                 continue;
@@ -753,7 +792,7 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
         allCores.insert(allCores.end(), internalCores.begin(), internalCores.end());
         allCores.insert(allCores.end(), externalCores.begin(), externalCores.end());
 
-        // 7) Split excessBody by parting surface and unite back into upper/lower mold.
+        // 8) Split excessBody by parting surface and unite back into upper/lower mold.
         auto excessSplit = splitBodyByPartingSurface(excessBody, partingOrigin, pullDir);
         if (excessSplit.first) {
             applyBooleanFeature(part, upperBody, excessSplit.first,
@@ -764,7 +803,7 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
                                 NXOpen::Features::Feature::BooleanTypeUnite, false);
         }
 
-        // 8) Split each core by parting surface and subtract from upper/lower mold (retain core tools).
+        // 9) Split each core by parting surface and subtract from upper/lower mold (retain core tools).
         for (NXOpen::Body* coreBody : allCores) {
             if (!coreBody) {
                 continue;
@@ -782,7 +821,7 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
             }
         }
 
-        // 9) Delete temporary bodies.
+        // 10) Delete temporary bodies B and the unsplit excess.
         if (contourBodyB) {
             UF_OBJ_delete_object(contourBodyB->Tag());
         }
@@ -890,7 +929,7 @@ void MyClass::do_it() {
     print(stream.str());
 
     highlightPartingSurface(result.partingSurface.boundary);
-    showMoldAssembly(result.moldAssembly, result.maxContour.boundary);
+    showMoldAssembly(result.moldAssembly, result.maxContour, mesh);
     showSandCores(result.sandCores);
 }
 
