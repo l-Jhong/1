@@ -1396,10 +1396,71 @@ namespace casting {
             return regions;
         }
 
+        struct NonCastDecision {
+            bool castFeature = true;
+            std::string reason;
+            std::string recommendation;
+        };
+
+        double smallHoleThresholdByBatch(ProductionBatch batch) {
+            switch (batch) {
+            case ProductionBatch::MassProduction:
+                return 12.0;
+            case ProductionBatch::BatchProduction:
+                return 15.0;
+            case ProductionBatch::SmallBatch:
+                return 30.0;
+            }
+            return 15.0;
+        }
+
+        NonCastDecision evaluateNonCastFeature(const CoreRegion& region,
+            double width,
+            double depth,
+            double length,
+            double curvatureDeg,
+            ProductionBatch batch) {
+            NonCastDecision decision;
+            double eps = std::max(kClosureTolerance, 1e-6);
+            double depthWidth = depth / std::max(width, eps);
+            double lengthWidth = length / std::max(width, eps);
+
+            bool isOpen = region.openingCount >= 1;
+            bool throughLike = region.openingCount >= 2;
+            bool blindLike = region.openingCount == 1;
+            bool nonRoundSlot = width < 20.0 && lengthWidth > 2.0;
+
+            if (throughLike && depthWidth > 4.0) {
+                decision.castFeature = false;
+                decision.reason = "通孔长径比超过4，按不铸出处理。";
+            } else if (blindLike && depthWidth > 3.0) {
+                decision.castFeature = false;
+                decision.reason = "盲孔深径比超过3，按不铸出处理。";
+            } else if (isOpen && width < smallHoleThresholdByBatch(batch)) {
+                decision.castFeature = false;
+                decision.reason = "孔径低于当前生产批量的不铸出阈值。";
+            } else if (nonRoundSlot && width < 15.0 && depth < 10.0) {
+                decision.castFeature = false;
+                decision.reason = "窄槽宽度和深度较小，按机械加工处理。";
+            } else if (nonRoundSlot && width < 15.0 && lengthWidth > 10.0) {
+                decision.castFeature = false;
+                decision.reason = "细长槽长宽比过大，按不铸出处理。";
+            } else if (curvatureDeg > 30.0 && isOpen && width < 20.0) {
+                decision.castFeature = false;
+                decision.reason = "弯曲孔/槽曲率大且不利于设置芯头，按不铸出处理。";
+            }
+
+            if (!decision.castFeature) {
+                decision.recommendation = "该区域在毛坯中保留实体，并在后续机加工中开孔/开槽，附加机加工余量。";
+            }
+            return decision;
+        }
+
         CoreRegion classifyCoreRegion(const Mesh& mesh,
             const CoreRegion& input,
             const Vector3& demoldDirection,
             CastingMaterial material,
+            ProductionBatch batch,
             const Bounds& meshBounds,
             double meshVolume) {
             CoreRegion region = input;
@@ -1505,9 +1566,24 @@ namespace casting {
             region.lengthDiameterRatio = slice.lengthDiameterRatio;
             region.minWallThickness = slice.minWallThickness;
             region.segmentationPositions = slice.segmentationPositions;
+            Vector3 regionSize = region.bounds.max - region.bounds.min;
+            double width = std::min({ std::abs(regionSize.x), std::abs(regionSize.y), std::abs(regionSize.z) });
+            double length = std::max({ std::abs(regionSize.x), std::abs(regionSize.y), std::abs(regionSize.z) });
+            double depth = region.basicType == CoreRegionBasicType::ExternalCore
+                ? region.undercutDepth
+                : region.cavityDepth;
 
             double depthThreshold = material == CastingMaterial::CastSteel ? 3.0 : 2.0;
             bool needCore = true;
+            NonCastDecision nonCast = evaluateNonCastFeature(region, width, depth, length,
+                slice.maxCurvatureDeg, batch);
+            region.castFeature = nonCast.castFeature;
+            region.nonCastReason = nonCast.reason;
+            region.machiningRecommendation = nonCast.recommendation;
+            region.nxColor = nonCast.castFeature ? kCoreColor : kNonCastFeatureColor;
+            if (!nonCast.castFeature) {
+                needCore = false;
+            }
 
             if (region.basicType == CoreRegionBasicType::ExternalCore) {
                 if (region.undercutDepth < depthThreshold) {
@@ -1579,7 +1655,7 @@ namespace casting {
             classified.reserve(regions.size());
             for (const auto& region : regions) {
                 classified.push_back(classifyCoreRegion(mesh, region, demoldDirection,
-                    settings.castingMaterial, meshBounds, meshVolume));
+                    settings.castingMaterial, settings.productionBatch, meshBounds, meshVolume));
             }
 
             std::vector<std::size_t> internalIds;
@@ -2059,7 +2135,7 @@ namespace casting {
 
             // Keep generated core bodies visually distinct while staying in a compact layer range.
             std::size_t visualKey = core.id * kVisualHashMultiplier;
-            core.nxColor = kCoreColor + static_cast<int>(visualKey % kSandCoreColorVariants);
+            core.nxColor = region.nxColor + static_cast<int>(visualKey % kSandCoreColorVariants);
             core.nxLayer = kSandCoreBaseLayer + static_cast<int>(visualKey % kSandCoreLayerVariants);
             appendStageLog(&core.diagnostics, "NX output mapping completed.");
             return core;
@@ -2267,9 +2343,30 @@ namespace casting {
             return report;
         }
 
+        void appendSandCoreInserts(const SandCore& core,
+            const AutoPartingSettings& settings,
+            std::vector<CoreInsert>* inserts) {
+            if (!inserts) {
+                return;
+            }
+            CoreInsert insert;
+            insert.pullDirection = length(core.pullDirection) > std::numeric_limits<double>::epsilon()
+                ? core.pullDirection
+                : Vector3{ 0.0, 0.0, 1.0 };
+            insert.bodyBounds = expandBounds(core.geometryBounds, settings.moldClearance);
+            insert.headBounds = extendBoundsAlongDirection(insert.bodyBounds, insert.pullDirection,
+                settings.coreHeadLength);
+            insert.seatBounds = expandBounds(insert.headBounds, settings.coreSeatClearance);
+            inserts->push_back(insert);
+            for (const auto& subCore : core.subCores) {
+                appendSandCoreInserts(subCore, settings, inserts);
+            }
+        }
+
         MoldAssembly buildMoldAssembly(const Mesh& mesh, const PartingSurface& surface,
             const Vector3& direction, const AutoPartingSettings& settings,
-            const std::vector<CoreRegion>& cores) {
+            const std::vector<SandCore>& sandCores,
+            const std::vector<CoreRegion>& regions) {
             MoldAssembly assembly;
 
             // 1) Compute direction-aligned bounding box to generate mold blanks.
@@ -2349,17 +2446,22 @@ namespace casting {
             assembly.overallBounds.max.y = std::max(assembly.overallBounds.max.y, lower.bounds.max.y);
             assembly.overallBounds.max.z = std::max(assembly.overallBounds.max.z, lower.bounds.max.z);
 
-            // 4) Generate sand-core, core-head, and core-seat bounds from undercut regions.
-            for (const auto& core : cores) {
-                CoreInsert insert;
-                insert.pullDirection = length(core.pullDirection) > std::numeric_limits<double>::epsilon()
-                    ? core.pullDirection
-                    : direction;
-                insert.bodyBounds = expandBounds(core.bounds, settings.moldClearance);
-                insert.headBounds = extendBoundsAlongDirection(insert.bodyBounds, insert.pullDirection,
-                    settings.coreHeadLength);
-                insert.seatBounds = expandBounds(insert.headBounds, settings.coreSeatClearance);
-                assembly.cores.push_back(insert);
+            // 4) Final mold blank semantics: enclosing box minus scaled part minus all generated sand cores.
+            for (const auto& core : sandCores) {
+                appendSandCoreInserts(core, settings, &assembly.cores);
+            }
+
+            // 5) Store non-cast-hole regions for solid-fill and machining annotation.
+            for (const auto& region : regions) {
+                if (region.castFeature) {
+                    continue;
+                }
+                MachiningRegion machining;
+                machining.bounds = region.bounds;
+                machining.nxColor = region.nxColor;
+                machining.reason = region.nonCastReason;
+                machining.recommendation = region.machiningRecommendation;
+                assembly.machiningRegions.push_back(machining);
             }
 
             return assembly;
@@ -2517,11 +2619,33 @@ namespace casting {
         }
         result.sandCores = generateSandCores(result.cleanedMesh, result.demold.direction,
             result.cores, settings);
+        std::vector<InterferenceIssue> secondaryPartingIssues =
+            checkPartingSurfaceQuality(result.partingSurface, result.demold.direction);
+        for (const auto& issue : secondaryPartingIssues) {
+            result.issues.push_back(
+                { "Secondary parting-surface check after sand-core generation: " + issue.message,
+                  issue.severity });
+        }
+        bool hasCriticalPartingIssue = std::any_of(secondaryPartingIssues.begin(),
+            secondaryPartingIssues.end(),
+            [](const InterferenceIssue& issue) {
+                return issue.severity >= 0.85;
+            });
+        if (hasCriticalPartingIssue) {
+            result.partingSurface = buildPartingSurface(result.partingLine,
+                result.demold.direction,
+                settings.smoothingFactor,
+                settings.partingSurfaceExtension,
+                settings.preferPlanarSurface,
+                settings.nonPlanarDeviationRatio, nullptr);
+            result.split = splitMesh(result.cleanedMesh, result.demold.direction);
+        }
         result.moldAssembly = buildMoldAssembly(result.cleanedMesh, result.partingSurface,
-            result.demold.direction, settings, result.cores);
+            result.demold.direction, settings, result.sandCores, classifiedRegions);
         result.strategies = buildStrategyOptions(result.separability, result.cores.size());
-        result.issues = checkInterference(result.cleanedMesh, result.split, result.partingLine,
-            result.partingSurface, result.demold, result.moldAssembly);
+        std::vector<InterferenceIssue> interferenceIssues = checkInterference(result.cleanedMesh,
+            result.split, result.partingLine, result.partingSurface, result.demold, result.moldAssembly);
+        result.issues.insert(result.issues.end(), interferenceIssues.begin(), interferenceIssues.end());
         return result;
     }
 

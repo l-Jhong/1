@@ -53,6 +53,7 @@ int main() {
               << " | Used fallback: " << (result.maxContour.fallbackUsed ? "yes" : "no") << "\n";
     std::cout << "Mold blocks: " << result.moldAssembly.blocks.size() << "\n";
     std::cout << "Core inserts: " << result.moldAssembly.cores.size() << "\n";
+    std::cout << "Machining regions (non-cast): " << result.moldAssembly.machiningRegions.size() << "\n";
     if (!result.sandCores.empty()) {
         const auto& firstCore = result.sandCores.front();
         std::cout << "First sand core heads: " << firstCore.heads.size()
@@ -61,7 +62,8 @@ int main() {
     std::cout << "Interference issues: " << result.issues.size() << "\n";
     std::cout << "Visualization colors: upper=" << casting::kUpperMoldColor
               << ", lower=" << casting::kLowerMoldColor
-              << ", core=" << casting::kCoreColor << "\n";
+              << ", core=" << casting::kCoreColor
+              << ", non-cast=" << casting::kNonCastFeatureColor << "\n";
 
     return 0;
 }

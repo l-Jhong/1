@@ -11,6 +11,7 @@ constexpr int kUpperMoldColor = 186;
 constexpr int kLowerMoldColor = 112;
 constexpr int kCoreColor = 10;
 constexpr int kCoreHeadColor = 25;
+constexpr int kNonCastFeatureColor = 33;
 
 struct DemoldEvaluation {
     Vector3 direction{};
@@ -53,6 +54,9 @@ struct CoreRegion {
     CoreRegionBasicType basicType = CoreRegionBasicType::NoCore;
     CoreRegionDetailType detailType = CoreRegionDetailType::None;
     bool generateCore = true;
+    bool castFeature = true;
+    std::string nonCastReason;
+    std::string machiningRecommendation;
     bool requiresSegmentation = false;
     bool isComposite = false;
     std::size_t openingCount = 0;
@@ -62,11 +66,18 @@ struct CoreRegion {
     double minWallThickness = 0.0;
     std::vector<double> segmentationPositions;
     std::vector<std::size_t> childRegionIds;
+    int nxColor = kCoreColor;
 };
 
 enum class CastingMaterial {
     CastSteel,
     CastIron
+};
+
+enum class ProductionBatch {
+    MassProduction,
+    BatchProduction,
+    SmallBatch
 };
 
 enum class SandCoreType {
@@ -201,10 +212,18 @@ struct CoreInsert {
     Vector3 pullDirection{};
 };
 
+struct MachiningRegion {
+    Bounds bounds{};
+    int nxColor = kNonCastFeatureColor;
+    std::string reason;
+    std::string recommendation;
+};
+
 struct MoldAssembly {
     Bounds overallBounds{};
     std::vector<MoldBlock> blocks;
     std::vector<CoreInsert> cores;
+    std::vector<MachiningRegion> machiningRegions;
 };
 
 struct StrategyOption {
@@ -240,6 +259,7 @@ struct AutoPartingSettings {
     double minCoreVolumeRatio = 0.01;
     // Material used by manufacturability checks (minimum wall-thickness thresholds).
     CastingMaterial castingMaterial = CastingMaterial::CastIron;
+    ProductionBatch productionBatch = ProductionBatch::BatchProduction;
 };
 
 struct AutoPartingResult {
