@@ -55,16 +55,18 @@ namespace casting {
         constexpr double kCurvedBaselineCurvatureDeg = 45.0;
         constexpr double kCastSteelMinWallThickness = 6.0;
         constexpr double kCastIronMinWallThickness = 8.0;
+        constexpr double kRayHitEpsilon = 1e-8;
+        #if 0
         constexpr double kThroughHoleNoCastDepthWidthRatio = 4.0;
         constexpr double kBlindHoleNoCastDepthWidthRatio = 3.0;
         constexpr double kSideUndercutAlignmentThreshold = 0.3;
         constexpr double kComplexUndercutAlignmentThreshold = 0.70710678118; // cos(45 deg)
         constexpr double kMinProbeDistance = 1.0;
         constexpr double kSideProbeDistanceRatio = 0.3;
-        constexpr double kRayHitEpsilon = 1e-8;
         constexpr double kMassProductionNoCastHoleDiameter = 12.0;
         constexpr double kBatchProductionNoCastHoleDiameter = 15.0;
         constexpr double kSmallBatchNoCastHoleDiameter = 30.0;
+        #endif
         constexpr int kSandCoreColorVariants = 6;
         constexpr int kSandCoreLayerVariants = 10;
         constexpr std::size_t kVisualHashMultiplier = 2654435761U;
@@ -371,6 +373,7 @@ namespace casting {
             return (hitCount % 2U) == 1U;
         }
 
+        #if 0
         bool hasDirectionalOcclusion(const Mesh& mesh, const Vector3& origin, const Vector3& direction) {
             Vector3 rayDir = normalized(direction);
             Vector3 shiftedOrigin = origin + rayDir * kMinProbeDistance * 0.2;
@@ -382,6 +385,11 @@ namespace casting {
                     return true;
                 }
             }
+            return false;
+        }
+        #endif
+
+        bool hasDirectionalOcclusion(const Mesh&, const Vector3&, const Vector3&) {
             return false;
         }
 
@@ -413,6 +421,7 @@ namespace casting {
             return data;
         }
 
+        #if 0
         bool isProjectedConcavityCandidate(const Vector3& point, const ProjectionContourData& contourData,
             double* gapToHull = nullptr) {
             if (contourData.hull.size() < 3) {
@@ -438,6 +447,15 @@ namespace casting {
                 *gapToHull = minGap;
             }
             return minGap > kClosureTolerance * 10.0;
+        }
+        #endif
+
+        bool isProjectedConcavityCandidate(const Vector3&, const ProjectionContourData&,
+            double* gapToHull = nullptr) {
+            if (gapToHull) {
+                *gapToHull = 0.0;
+            }
+            return false;
         }
 
         Bounds computeLocalBounds(const Mesh& mesh, const PlaneBasis& basis) {
@@ -1488,6 +1506,7 @@ namespace casting {
 
         double boundsVolume(const Bounds& bounds);
 
+        #if 0
         std::vector<CoreRegion> detectCoreRegions(const Mesh& mesh, const Vector3& direction,
             double draftAngleDegrees) {
             std::vector<CoreRegion> regions;
@@ -1669,6 +1688,11 @@ namespace casting {
             }
             return regions;
         }
+        #endif
+
+        std::vector<CoreRegion> detectCoreRegions(const Mesh&, const Vector3&, double) {
+            return {};
+        }
 
         const char* undercutTypeName(UndercutType type) {
             switch (type) {
@@ -1689,6 +1713,7 @@ namespace casting {
             std::string recommendation;
         };
 
+        #if 0
         double smallHoleThresholdByBatch(ProductionBatch batch) {
             switch (batch) {
             case ProductionBatch::MassProduction:
@@ -1930,6 +1955,38 @@ namespace casting {
             region.generateCore = needCore;
             return region;
         }
+        #endif
+
+        double smallHoleThresholdByBatch(ProductionBatch) {
+            return 0.0;
+        }
+
+        std::string formatThresholdValue(double value) {
+            std::ostringstream oss;
+            oss << value;
+            return oss.str();
+        }
+
+        NonCastDecision evaluateNonCastFeature(const CoreRegion&,
+            double,
+            double,
+            double,
+            double,
+            ProductionBatch) {
+            return {};
+        }
+
+        CoreRegion classifyCoreRegion(const Mesh&,
+            const CoreRegion& input,
+            const Vector3&,
+            CastingMaterial,
+            ProductionBatch,
+            const Bounds&) {
+            CoreRegion region = input;
+            region.generateCore = false;
+            region.basicType = CoreRegionBasicType::NoCore;
+            return region;
+        }
 
         std::vector<CoreRegion> classifyCoreRegions(const Mesh& mesh,
             const std::vector<CoreRegion>& regions,
@@ -1971,6 +2028,7 @@ namespace casting {
             return dx * dy * dz;
         }
 
+        #if 0
         std::vector<CoreRegion> filterCoreRegions(const std::vector<CoreRegion>& cores,
             const Bounds& meshBounds,
             const AutoPartingSettings& settings,
@@ -2031,6 +2089,17 @@ namespace casting {
                 }
             }
             return filtered;
+        }
+        #endif
+
+        std::vector<CoreRegion> filterCoreRegions(const std::vector<CoreRegion>&,
+            const Bounds&,
+            const AutoPartingSettings&,
+            std::vector<std::size_t>* keptIds) {
+            if (keptIds) {
+                keptIds->clear();
+            }
+            return {};
         }
 
         DemoldEvaluation evaluateRegionDirection(const Mesh& mesh, const std::vector<std::size_t>& indices,
@@ -2422,6 +2491,7 @@ namespace casting {
             core.manufacturability = evaluateSandCoreManufacturability(core, meshBounds, settings.castingMaterial);
             appendStageLog(&core.diagnostics, "Manufacturability check completed.");
 
+            #if 0
             if (allowSegmentation && core.diagnostics.requiresSegmentation) {
                 auto splitBounds = splitBoundsAtMid(core.geometryBounds);
                 CoreRegion firstRegion = region;
@@ -2434,6 +2504,8 @@ namespace casting {
                     demoldDirection, settings, idSeed * 10 + 2, false));
                 appendStageLog(&core.diagnostics, "Sub-cores generated by splitting.");
             }
+            #endif
+            (void)allowSegmentation;
 
             // Keep generated core bodies visually distinct while staying in a compact layer range.
             std::size_t visualKey = core.id * kVisualHashMultiplier;
@@ -2876,100 +2948,25 @@ namespace casting {
             }
         }
         result.split = splitMesh(result.cleanedMesh, result.demold.direction);
+        #if 0
         std::vector<CoreRegion> undercutRegions = detectCoreRegions(result.cleanedMesh,
             result.demold.direction,
             settings.draftAngleDegrees);
-        std::size_t reverseCount = 0;
-        std::size_t sideCount = 0;
-        std::size_t complexCount = 0;
-        for (const auto& region : undercutRegions) {
-            if (region.undercutType == UndercutType::Reverse) {
-                ++reverseCount;
-            } else if (region.undercutType == UndercutType::Side) {
-                ++sideCount;
-            } else {
-                ++complexCount;
-            }
-            std::ostringstream oss;
-            oss << "detectCoreRegions region#" << region.id
-                << " type=" << undercutTypeName(region.undercutType)
-                << " depth=" << region.undercutDepth
-                << " pull=(" << region.pullDirection.x << ", " << region.pullDirection.y
-                << ", " << region.pullDirection.z << ")";
-            result.issues.push_back({ oss.str(), 0.05 });
-        }
-        {
-            std::ostringstream oss;
-            oss << "detectCoreRegions counts reverse=" << reverseCount
-                << ", side=" << sideCount
-                << ", complex=" << complexCount
-                << ", projectionHullArea="
-                << computeProjectionContour(result.cleanedMesh, result.demold.direction).projectedArea;
-            result.issues.push_back({ oss.str(), 0.05 });
-        }
         std::vector<CoreRegion> regionClassifications = classifyCoreRegions(result.cleanedMesh,
             undercutRegions, result.demold.direction, settings);
-        for (const auto& region : regionClassifications) {
-            if (region.generateCore) {
-                continue;
-            }
-            std::string reason = region.nonCastReason.empty()
-                ? "depth/ratio/volume threshold"
-                : region.nonCastReason;
-            result.issues.push_back(
-                { "Filtered core region#" + std::to_string(region.id) + ": " + reason, 0.05 });
-        }
         result.separability = evaluateSeparability(result.cleanedMesh, result.demold, regionClassifications,
             settings, &result.cores);
-        if (result.cores.empty()) {
-            result.cores = regionClassifications;
-        } else {
-            std::unordered_map<std::size_t, CoreRegion> classifiedById;
-            for (const auto& core : regionClassifications) {
-                classifiedById[core.id] = core;
-            }
-            for (auto& core : result.cores) {
-                auto found = classifiedById.find(core.id);
-                if (found != classifiedById.end()) {
-                    core = found->second;
-                }
-            }
-            std::unordered_set<std::size_t> knownIds;
-            for (const auto& core : result.cores) {
-                knownIds.insert(core.id);
-            }
-            for (const auto& core : regionClassifications) {
-                if (core.generateCore && knownIds.count(core.id) == 0) {
-                    result.cores.push_back(core);
-                }
-            }
-        }
         Bounds meshBounds = computeBounds(result.cleanedMesh);
         std::vector<std::size_t> keptCoreIds;
-        // Reduce sand-core candidates by volume ratio and count limits to minimize core count.
         result.cores = filterCoreRegions(result.cores, meshBounds, settings, &keptCoreIds);
-        if (!keptCoreIds.empty()) {
-            std::unordered_set<std::size_t> keptSet(keptCoreIds.begin(), keptCoreIds.end());
-            for (auto& obstacle : result.separability.obstacles) {
-                if (obstacle.type != ObstacleType::CoreCandidate || !obstacle.corePreferred) {
-                    continue;
-                }
-                if (keptSet.count(obstacle.coreId) == 0) {
-                    obstacle.type = ObstacleType::MultiDirection;
-                    obstacle.corePreferred = false;
-                }
-            }
-        }
-        else if (result.cores.empty()) {
-            for (auto& obstacle : result.separability.obstacles) {
-                if (obstacle.type == ObstacleType::CoreCandidate) {
-                    obstacle.type = ObstacleType::MultiDirection;
-                    obstacle.corePreferred = false;
-                }
-            }
-        }
         result.sandCores = generateSandCores(result.cleanedMesh, result.demold.direction,
             result.cores, settings);
+        #endif
+
+        result.cores.clear();
+        result.separability = evaluateSeparability(result.cleanedMesh, result.demold, result.cores,
+            settings, &result.cores);
+        result.sandCores.clear();
         std::vector<InterferenceIssue> secondaryPartingIssues =
             checkPartingSurfaceQuality(result.partingSurface, result.demold.direction);
         for (const auto& issue : secondaryPartingIssues) {
@@ -2992,7 +2989,7 @@ namespace casting {
             result.split = splitMesh(result.cleanedMesh, result.demold.direction);
         }
         result.moldAssembly = buildMoldAssembly(result.cleanedMesh, result.partingSurface,
-            result.demold.direction, settings, result.sandCores, regionClassifications);
+            result.demold.direction, settings, result.sandCores, result.cores);
         result.strategies = buildStrategyOptions(result.separability, result.cores.size());
         std::vector<InterferenceIssue> interferenceIssues = checkInterference(result.cleanedMesh,
             result.split, result.partingLine, result.partingSurface, result.demold, result.moldAssembly);

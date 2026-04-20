@@ -46,13 +46,14 @@ using std::endl;
 using std::cout;
 using std::cerr;
 
-#ifndef DEBUG_CORE_EXTRACTION
-#error "DEBUG_CORE_EXTRACTION must be defined by build system flags."
+#ifndef DEBUG_ENVELOPE_SUBTRACTION
+#define DEBUG_ENVELOPE_SUBTRACTION 0
 #endif
 
 namespace {
 
 constexpr bool kRetainToolBody = true;
+NXOpen::Body* createExtrudedRectangularSolid(const casting::Bounds& bounds, int color, int layer = -1);
 
 NXOpen::Part* resolveWorkPart(BasePart* workPart) {
     if (NXOpen::Part* part = dynamic_cast<NXOpen::Part*>(workPart)) {
@@ -218,7 +219,6 @@ bool applyBooleanFeature(NXOpen::Part* part,
     }
 }
 
-#if DEBUG_CORE_EXTRACTION
 casting::Bounds askBodyBounds(tag_t bodyTag) {
     double box[6]{};
     casting::Bounds bounds{};
@@ -245,21 +245,37 @@ bool isBoundsOverlapping(const casting::Bounds& left, const casting::Bounds& rig
            left.max.z >= right.min.z - tolerance && left.min.z <= right.max.z + tolerance;
 }
 
-std::vector<NXOpen::Body*> extractInternalVolumes(NXOpen::Body* moldBody) {
+NXOpen::Body* createExtractionEnvelope(const casting::Bounds& bounds,
+                                       const casting::Vector3& pullDir,
+                                       double padding) {
+    casting::Bounds expanded = bounds;
+    expanded.min.x -= padding;
+    expanded.min.y -= padding;
+    expanded.min.z -= padding;
+    expanded.max.x += padding;
+    expanded.max.y += padding;
+    expanded.max.z += padding;
+    // TODO: Build a strict envelope from maxContour projection with side walls parallel to pullDir.
+    (void)pullDir;
+    return createExtrudedRectangularSolid(expanded, casting::kCoreColor, casting::kSandCoreBaseLayer);
+}
+
+std::vector<NXOpen::Body*> extractInternalVolumes(NXOpen::Body* body) {
     std::vector<NXOpen::Body*> internalBodies;
-    if (!moldBody) {
+    if (!body) {
         return internalBodies;
     }
 
-    NXOpen::Part* part = dynamic_cast<NXOpen::Part*>(moldBody->OwningPart());
+    NXOpen::Part* part = dynamic_cast<NXOpen::Part*>(body->OwningPart());
     if (!part || !part->Bodies()) {
         return internalBodies;
     }
 
-    casting::Bounds moldBounds = askBodyBounds(moldBody->Tag());
+    // TODO: Implement topological closed-cavity extraction (UF_MODL_ask_body_boundaries / UF_MODL_ask_face_loops).
+    casting::Bounds moldBounds = askBodyBounds(body->Tag());
     constexpr double kBoundsContainmentTolerance = 1e-4;
     for (NXOpen::Body* candidate : *part->Bodies()) {
-        if (!candidate || candidate == moldBody || !candidate->IsSolidBody()) {
+        if (!candidate || candidate == body || !candidate->IsSolidBody()) {
             continue;
         }
         casting::Bounds candidateBounds = askBodyBounds(candidate->Tag());
@@ -272,7 +288,16 @@ std::vector<NXOpen::Body*> extractInternalVolumes(NXOpen::Body* moldBody) {
     }
     return internalBodies;
 }
-#endif
+
+std::vector<NXOpen::Body*> splitIntoConnectedBodies(NXOpen::Body* body) {
+    std::vector<NXOpen::Body*> connectedBodies;
+    if (!body) {
+        return connectedBodies;
+    }
+    // TODO: Implement connected-component splitting (UF_MODL / ExtractGeometry based split into multiple bodies).
+    connectedBodies.push_back(body);
+    return connectedBodies;
+}
 
 std::vector<tag_t> collectSolidBodyTags(BasePart* workPart) {
     std::vector<tag_t> tags;
@@ -292,7 +317,7 @@ std::vector<tag_t> collectSolidBodyTags(BasePart* workPart) {
     return tags;
 }
 
-NXOpen::Body* createExtrudedRectangularSolid(const casting::Bounds& bounds, int color, int layer = -1) {
+NXOpen::Body* createExtrudedRectangularSolid(const casting::Bounds& bounds, int color, int layer) {
     double edgeX = bounds.max.x - bounds.min.x;
     double edgeY = bounds.max.y - bounds.min.y;
     double edgeZ = bounds.max.z - bounds.min.z;
@@ -510,6 +535,86 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
 
     // Subtract shrinkage-scaled cavity bounds from upper/lower blanks to get final mold geometry.
     // Use NXOpen Boolean Builder consistently: target + tool + operation type (Subtract).
+#if DEBUG_ENVELOPE_SUBTRACTION
+    NXOpen::Body* partBody = partToolBodies.empty() ? nullptr : partToolBodies.front();
+    std::vector<NXOpen::Body*> internalCores;
+    std::vector<NXOpen::Body*> externalCores;
+    if (partBody) {
+        casting::Vector3 pullDir = assembly.blocks.empty() ? casting::Vector3{0.0, 0.0, 1.0}
+                                                           : assembly.blocks.front().pullDirection;
+        if (std::abs(pullDir.x) < 1e-9 && std::abs(pullDir.y) < 1e-9 && std::abs(pullDir.z) < 1e-9) {
+            pullDir = {0.0, 0.0, 1.0};
+        }
+        casting::Bounds partBounds = askBodyBounds(partBody->Tag());
+        NXOpen::Body* extractionEnvelope = createExtractionEnvelope(partBounds, pullDir, 5.0);
+        NXOpen::Body* intermediateBody = nullptr;
+        if (extractionEnvelope &&
+            applyBooleanFeature(part, extractionEnvelope, partBody,
+                                NXOpen::Features::Feature::BooleanTypeSubtract, true)) {
+            intermediateBody = extractionEnvelope;
+        }
+
+        if (intermediateBody) {
+            std::vector<NXOpen::Body*> extractedInternal = extractInternalVolumes(intermediateBody);
+            std::vector<NXOpen::Body*> internalCoreCopies;
+            internalCoreCopies.reserve(extractedInternal.size());
+            for (NXOpen::Body* internalCore : extractedInternal) {
+                if (!internalCore) {
+                    continue;
+                }
+                casting::Bounds coreBounds = askBodyBounds(internalCore->Tag());
+                NXOpen::Body* coreCopy = createExtrudedRectangularSolid(
+                    coreBounds, casting::kCoreColor, casting::kSandCoreBaseLayer);
+                if (coreCopy) {
+                    internalCoreCopies.push_back(coreCopy);
+                }
+            }
+            internalCores = internalCoreCopies;
+
+            NXOpen::Body* externalVolume = intermediateBody;
+            for (NXOpen::Body* internalCore : extractedInternal) {
+                if (!externalVolume || !internalCore) {
+                    continue;
+                }
+                applyBooleanFeature(part, externalVolume, internalCore,
+                                    NXOpen::Features::Feature::BooleanTypeSubtract, false);
+            }
+            externalCores = splitIntoConnectedBodies(externalVolume);
+        }
+    }
+
+    for (NXOpen::Body* coreBody : internalCores) {
+        if (!coreBody) {
+            continue;
+        }
+        UF_OBJ_set_color(coreBody->Tag(), casting::kCoreColor);
+        UF_OBJ_set_layer(coreBody->Tag(), casting::kSandCoreBaseLayer);
+    }
+    for (NXOpen::Body* coreBody : externalCores) {
+        if (!coreBody) {
+            continue;
+        }
+        UF_OBJ_set_color(coreBody->Tag(), casting::kCoreColor);
+        UF_OBJ_set_layer(coreBody->Tag(), casting::kSandCoreBaseLayer);
+    }
+
+    for (NXOpen::Body* moldBody : {upperBody, lowerBody}) {
+        for (NXOpen::Body* internalCore : internalCores) {
+            applyBooleanFeature(part, moldBody, internalCore,
+                                NXOpen::Features::Feature::BooleanTypeSubtract, true);
+        }
+        for (NXOpen::Body* externalCore : externalCores) {
+            applyBooleanFeature(part, moldBody, externalCore,
+                                NXOpen::Features::Feature::BooleanTypeSubtract, true);
+        }
+        if (!partToolBodies.empty()) {
+            for (NXOpen::Body* toolBody : partToolBodies) {
+                applyBooleanFeature(part, moldBody, toolBody,
+                                    NXOpen::Features::Feature::BooleanTypeSubtract, false);
+            }
+        }
+    }
+#else
     if (!partToolBodies.empty()) {
         if (assembly.blocks[0].subtractPart) {
             for (NXOpen::Body* toolBody : partToolBodies) {
@@ -538,21 +643,6 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
                                     NXOpen::Features::Feature::BooleanTypeSubtract, kRetainToolBody);
             }
         }
-    }
-
-#if DEBUG_CORE_EXTRACTION
-    std::vector<NXOpen::Body*> debugSandCores = extractInternalVolumes(upperBody);
-    std::vector<NXOpen::Body*> lowerDebugSandCores = extractInternalVolumes(lowerBody);
-    debugSandCores.insert(debugSandCores.end(), lowerDebugSandCores.begin(), lowerDebugSandCores.end());
-    std::sort(debugSandCores.begin(), debugSandCores.end(),
-              [](NXOpen::Body* left, NXOpen::Body* right) {
-                  return left->Tag() < right->Tag();
-              });
-    debugSandCores.erase(std::unique(debugSandCores.begin(), debugSandCores.end()),
-                         debugSandCores.end());
-    for (NXOpen::Body* sandCoreBody : debugSandCores) {
-        UF_OBJ_set_color(sandCoreBody->Tag(), casting::kCoreColor);
-        UF_OBJ_set_layer(sandCoreBody->Tag(), casting::kSandCoreBaseLayer);
     }
 #endif
 
