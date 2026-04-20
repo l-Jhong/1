@@ -10,15 +10,13 @@
 6. 砂芯/活块自动识别：识别封闭空腔与倒扣区域
 7. 干涉检查与方案优化
 
-## 构建与运行
+## 构建与运行（仅 VS2022）
 
-本仓库默认提供一个独立可执行示例（`casting_auto_parting_demo`）用于验证算法流程：
+本仓库已切换为 **VS2022 常规 C++ 工程**（不使用 CMake）。
 
-```bash
-cmake -S . -B build
-cmake --build build
-./build/casting_auto_parting_demo
-```
+1. 用 VS2022 打开解决方案：`casting_auto_parting.sln`
+2. 选择 `x64` + `Debug` 或 `Release`
+3. 右键 `casting_auto_parting_demo` 设为启动项目并编译运行
 
 ## NXOpen 二次开发入口
 
@@ -26,19 +24,14 @@ cmake --build build
 
 如需在 NX 环境中编译（生成 NX 12.0 可用 DLL）：
 
-```bash
-cmake -S . -B build ^
-  -DNXOPEN_ENABLED=ON ^
-  -DNXOPEN_ROOT_DIR="C:/Siemens/NX 12.0" ^
-  -DNXOPEN_INCLUDE_DIR="C:/Siemens/NX 12.0/UGOPEN" ^
-  -DNXOPEN_LIB_DIR="C:/Siemens/NX 12.0/UGOPEN"
-cmake --build build --config Release
-```
+1. 在 VS2022 中编译项目 `casting_auto_parting_nxopen`
+2. 确认环境变量 `UGII_BASE_DIR` 指向 NX 安装目录（工程默认使用 `$(UGII_BASE_DIR)\\UGOPEN`）
+3. 如路径不同，可在项目属性中调整：
+   - `NXOPEN_INCLUDE_DIR`
+   - `NXOPEN_LIB_DIR`
 
-> 注意：请根据实际 NXOpen 安装路径设置 `NXOPEN_INCLUDE_DIR` / `NXOPEN_LIB_DIR`。
-
-生成的 DLL 默认输出到：
+生成 DLL 文件名为：
 
 ```
-build/nxopen/casting_auto_parting_nxopen.dll
+casting_auto_parting_nxopen.dll
 ```
