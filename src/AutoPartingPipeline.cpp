@@ -2362,46 +2362,41 @@ namespace casting {
         result.cleanedMesh = preprocessMesh(input, settings.minTriangleArea);
         result.demold = selectBestDemoldDirection(result.cleanedMesh, settings);
         result.partingLine = extractPartingLine(result.cleanedMesh, result.demold.direction);
-        // Identify the max contour first: it is the largest cross-section perpendicular to
-        // the demold direction and serves as the authoritative reference for the parting surface.
         result.maxContour = identifyMaxContour(result.cleanedMesh, result.partingLine, result.demold.direction);
-        // Build the parting surface from the max contour so it is a flat plane perpendicular
-        // to the demold direction.  Fall back to the original approach if the contour is
-        // degenerate (fewer than 3 boundary points).
-        if (result.maxContour.boundary.size() >= 3) {
+
+        bool planarBuilt = false;
+        if (result.maxContour.boundary.size() >= 3U) {
             result.partingSurface = buildPlanarPartingSurface(
                 result.maxContour, result.demold.direction,
                 settings.partingSurfaceExtension, &result.partingSurfaceStages);
-        } else {
-            result.partingSurfaceStages = buildPartingSurfaceStages(result.partingLine,
+            planarBuilt = !result.partingSurface.boundary.empty();
+        }
+        if (!planarBuilt) {
+            result.partingSurface = buildPartingSurface(result.partingLine,
                 result.demold.direction,
                 settings.smoothingFactor,
                 settings.partingSurfaceExtension,
                 settings.preferPlanarSurface,
-                settings.nonPlanarDeviationRatio);
-            if (!result.partingSurfaceStages.empty()) {
+                settings.nonPlanarDeviationRatio, &result.partingSurfaceStages);
+            if (result.partingSurface.boundary.empty() && !result.partingSurfaceStages.empty()) {
                 result.partingSurface.boundary = result.partingSurfaceStages.back().boundary;
-            } else {
-                result.partingSurface = buildPartingSurface(result.partingLine,
-                    result.demold.direction,
-                    settings.smoothingFactor,
-                    settings.partingSurfaceExtension,
-                    settings.preferPlanarSurface,
-                    settings.nonPlanarDeviationRatio, nullptr);
             }
         }
-        result.split = splitMesh(result.cleanedMesh, result.demold.direction);
 
+        result.split = splitMesh(result.cleanedMesh, result.demold.direction);
         result.cores.clear();
-        result.separability = evaluateSeparability(result.cleanedMesh, result.demold, result.cores,
-            settings, &result.cores);
         result.sandCores.clear();
+
+        result.separability.obstacles.clear();
+        result.separability.score = std::clamp(1.0 - result.demold.undercutRatio, 0.0, 1.0);
+        result.separability.separable =
+            result.demold.undercutRatio <= settings.separabilityUndercutThreshold;
+
         std::vector<InterferenceIssue> secondaryPartingIssues =
             checkPartingSurfaceQuality(result.partingSurface, result.demold.direction);
         for (const auto& issue : secondaryPartingIssues) {
             result.issues.push_back(
-                { "Secondary parting-surface check after sand-core generation: " + issue.message,
-                  issue.severity });
+                { "Secondary parting-surface check: " + issue.message, issue.severity });
         }
         bool hasCriticalPartingIssue = std::any_of(secondaryPartingIssues.begin(),
             secondaryPartingIssues.end(),
@@ -2414,9 +2409,13 @@ namespace casting {
                 settings.smoothingFactor,
                 settings.partingSurfaceExtension,
                 settings.preferPlanarSurface,
-                settings.nonPlanarDeviationRatio, nullptr);
+                settings.nonPlanarDeviationRatio, &result.partingSurfaceStages);
+            if (result.partingSurface.boundary.empty() && !result.partingSurfaceStages.empty()) {
+                result.partingSurface.boundary = result.partingSurfaceStages.back().boundary;
+            }
             result.split = splitMesh(result.cleanedMesh, result.demold.direction);
         }
+
         result.moldAssembly = buildMoldAssembly(result.cleanedMesh, result.partingSurface,
             result.demold.direction, settings, result.sandCores, result.cores);
         result.strategies = buildStrategyOptions(result.separability, result.cores.size());
