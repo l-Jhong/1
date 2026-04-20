@@ -1412,9 +1412,8 @@ namespace casting {
                 return 15.0;
             case ProductionBatch::SmallBatch:
                 return 30.0;
-            default:
-                return 15.0;
             }
+            return 15.0;
         }
 
         NonCastDecision evaluateNonCastFeature(const CoreRegion& region,
@@ -1435,10 +1434,12 @@ namespace casting {
 
             if (throughLike && depthWidth > kThroughHoleNoCastDepthWidthRatio) {
                 decision.castFeature = false;
-                decision.reason = "通孔长径比超过4，按不铸出处理。";
+                decision.reason = "通孔长径比超过" +
+                    std::to_string(kThroughHoleNoCastDepthWidthRatio) + "，按不铸出处理。";
             } else if (blindLike && depthWidth > kBlindHoleNoCastDepthWidthRatio) {
                 decision.castFeature = false;
-                decision.reason = "盲孔深径比超过3，按不铸出处理。";
+                decision.reason = "盲孔深径比超过" +
+                    std::to_string(kBlindHoleNoCastDepthWidthRatio) + "，按不铸出处理。";
             } else if (isOpen && width < smallHoleThresholdByBatch(batch)) {
                 decision.castFeature = false;
                 decision.reason = "孔径低于当前生产批量的不铸出阈值。";
