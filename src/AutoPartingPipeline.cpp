@@ -56,6 +56,9 @@ namespace casting {
         constexpr double kCastIronMinWallThickness = 8.0;
         constexpr double kThroughHoleNoCastDepthWidthRatio = 4.0;
         constexpr double kBlindHoleNoCastDepthWidthRatio = 3.0;
+        constexpr double kMassProductionNoCastHoleDiameter = 12.0;
+        constexpr double kBatchProductionNoCastHoleDiameter = 15.0;
+        constexpr double kSmallBatchNoCastHoleDiameter = 30.0;
         constexpr int kSandCoreColorVariants = 6;
         constexpr int kSandCoreBaseLayer = 90;
         constexpr int kSandCoreLayerVariants = 10;
@@ -1407,13 +1410,14 @@ namespace casting {
         double smallHoleThresholdByBatch(ProductionBatch batch) {
             switch (batch) {
             case ProductionBatch::MassProduction:
-                return 12.0;
+                return kMassProductionNoCastHoleDiameter;
             case ProductionBatch::BatchProduction:
-                return 15.0;
+                return kBatchProductionNoCastHoleDiameter;
             case ProductionBatch::SmallBatch:
-                return 30.0;
+                return kSmallBatchNoCastHoleDiameter;
+            default:
+                return kBatchProductionNoCastHoleDiameter;
             }
-            return 15.0;
         }
 
         NonCastDecision evaluateNonCastFeature(const CoreRegion& region,
@@ -2570,15 +2574,15 @@ namespace casting {
         std::vector<CoreRegion> undercutRegions = detectCoreRegions(result.cleanedMesh,
             result.demold.direction,
             settings.draftAngleDegrees);
-        std::vector<CoreRegion> allClassifiedRegions = classifyCoreRegions(result.cleanedMesh,
+        std::vector<CoreRegion> regionClassifications = classifyCoreRegions(result.cleanedMesh,
             undercutRegions, result.demold.direction, settings);
         result.separability = evaluateSeparability(result.cleanedMesh, result.demold, undercutRegions,
             settings, &result.cores);
         if (result.cores.empty()) {
-            result.cores = allClassifiedRegions;
+            result.cores = regionClassifications;
         } else {
             std::unordered_map<std::size_t, CoreRegion> classifiedById;
-            for (const auto& core : allClassifiedRegions) {
+            for (const auto& core : regionClassifications) {
                 classifiedById[core.id] = core;
             }
             for (auto& core : result.cores) {
@@ -2591,7 +2595,7 @@ namespace casting {
             for (const auto& core : result.cores) {
                 knownIds.insert(core.id);
             }
-            for (const auto& core : allClassifiedRegions) {
+            for (const auto& core : regionClassifications) {
                 if (core.generateCore && knownIds.count(core.id) == 0) {
                     result.cores.push_back(core);
                 }
@@ -2645,7 +2649,7 @@ namespace casting {
             result.split = splitMesh(result.cleanedMesh, result.demold.direction);
         }
         result.moldAssembly = buildMoldAssembly(result.cleanedMesh, result.partingSurface,
-            result.demold.direction, settings, result.sandCores, allClassifiedRegions);
+            result.demold.direction, settings, result.sandCores, regionClassifications);
         result.strategies = buildStrategyOptions(result.separability, result.cores.size());
         std::vector<InterferenceIssue> interferenceIssues = checkInterference(result.cleanedMesh,
             result.split, result.partingLine, result.partingSurface, result.demold, result.moldAssembly);
