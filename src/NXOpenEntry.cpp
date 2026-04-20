@@ -582,10 +582,21 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
     NXOpen::Body* intermediateBody = nullptr;
     std::vector<NXOpen::Body*> internalCores;
     std::vector<NXOpen::Body*> externalCores;
+    NXOpen::Body* externalVolume = nullptr;
 
-    // 1) 基于 cavityBounds 扩展 20mm，构建提取包容盒。
-    if (!assembly.blocks.empty()) {
-        casting::Bounds envelopeBounds = assembly.blocks[0].cavityBounds;
+    // 1) 计算零件全局包围盒（由两个 cavityBounds 合并）。
+    if (assembly.blocks.size() >= 2) {
+        casting::Bounds partGlobalBounds = assembly.blocks[0].cavityBounds;
+        const casting::Bounds& cavity1 = assembly.blocks[1].cavityBounds;
+        partGlobalBounds.min.x = std::min(partGlobalBounds.min.x, cavity1.min.x);
+        partGlobalBounds.min.y = std::min(partGlobalBounds.min.y, cavity1.min.y);
+        partGlobalBounds.min.z = std::min(partGlobalBounds.min.z, cavity1.min.z);
+        partGlobalBounds.max.x = std::max(partGlobalBounds.max.x, cavity1.max.x);
+        partGlobalBounds.max.y = std::max(partGlobalBounds.max.y, cavity1.max.y);
+        partGlobalBounds.max.z = std::max(partGlobalBounds.max.z, cavity1.max.z);
+
+        // 2) 基于 partGlobalBounds 外扩 20mm 生成包容盒。
+        casting::Bounds envelopeBounds = partGlobalBounds;
         constexpr double kEnvelopePadding = 20.0;
         envelopeBounds.min.x -= kEnvelopePadding;
         envelopeBounds.min.y -= kEnvelopePadding;
@@ -594,10 +605,10 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
         envelopeBounds.max.y += kEnvelopePadding;
         envelopeBounds.max.z += kEnvelopePadding;
         envelopeBody = createExtrudedRectangularSolid(
-            envelopeBounds, casting::kCoreColor, casting::kSandCoreBaseLayer);
+            envelopeBounds, 0, casting::kSandCoreBaseLayer);
     }
 
-    // 2) envelopeBody - partBody => intermediateBody（保留工具体）。
+    // 3) envelopeBody - partBody => intermediateBody（保留工具体）。
     if (envelopeBody && partBody) {
         if (applyBooleanFeature(part, envelopeBody, partBody,
                                 NXOpen::Features::Feature::BooleanTypeSubtract, true)) {
@@ -605,7 +616,7 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
         }
     }
 
-    // 3) 手动辅助提取内部砂芯。
+    // 4) 手动辅助提取内部砂芯。
     if (intermediateBody) {
         internalCores = extractInternalCoresManually(part, intermediateBody);
         for (NXOpen::Body* coreBody : internalCores) {
@@ -616,8 +627,8 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
             UF_OBJ_set_layer(coreBody->Tag(), casting::kSandCoreBaseLayer);
         }
 
-        // 4) intermediateBody - internalCores => externalVolume（不保留工具体）。
-        NXOpen::Body* externalVolume = intermediateBody;
+        // 5) intermediateBody - internalCores => externalVolume（不保留工具体）。
+        externalVolume = intermediateBody;
         for (NXOpen::Body* coreBody : internalCores) {
             if (!coreBody || !externalVolume) {
                 continue;
@@ -626,7 +637,7 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
                                 NXOpen::Features::Feature::BooleanTypeSubtract, false);
         }
 
-        // 5) externalVolume 按连通域分离为外部砂芯。
+        // 6) externalVolume 按连通域分离为外部砂芯（框架：split 可暂时返回空列表）。
         externalCores = splitIntoConnectedBodies(externalVolume);
         for (NXOpen::Body* coreBody : externalCores) {
             if (!coreBody) {
@@ -637,7 +648,7 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
         }
     }
 
-    // 6) 将内外砂芯分别从上下模中扣除（保留砂芯工具体）。
+    // 7) 将内外砂芯分别从上下模中扣除（保留砂芯工具体）。
     for (NXOpen::Body* moldBody : {upperBody, lowerBody}) {
         for (NXOpen::Body* internalCore : internalCores) {
             applyBooleanFeature(part, moldBody, internalCore,
@@ -650,12 +661,12 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
     }
 #endif
 
-    // 原有逻辑：执行模具毛坯减零件。
+    // 8) 原有逻辑：最后执行模具毛坯减零件（不保留工具体）。
     if (partBody) {
         applyBooleanFeature(part, upperBody, partBody,
-                            NXOpen::Features::Feature::BooleanTypeSubtract, true);
+                            NXOpen::Features::Feature::BooleanTypeSubtract, false);
         applyBooleanFeature(part, lowerBody, partBody,
-                            NXOpen::Features::Feature::BooleanTypeSubtract, true);
+                            NXOpen::Features::Feature::BooleanTypeSubtract, false);
     }
 }
 
