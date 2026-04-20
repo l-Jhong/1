@@ -58,6 +58,11 @@ namespace casting {
         constexpr double kCastIronMinWallThickness = 8.0;
         constexpr double kThroughHoleNoCastDepthWidthRatio = 4.0;
         constexpr double kBlindHoleNoCastDepthWidthRatio = 3.0;
+        constexpr double kSideUndercutAlignmentThreshold = 0.3;
+        constexpr double kComplexUndercutAlignmentThreshold = 0.70710678118; // cos(45 deg)
+        constexpr double kMinProbeDistance = 1.0;
+        constexpr double kSideProbeDistanceRatio = 0.3;
+        constexpr double kRayHitEpsilon = 1e-8;
         constexpr double kMassProductionNoCastHoleDiameter = 12.0;
         constexpr double kBatchProductionNoCastHoleDiameter = 15.0;
         constexpr double kSmallBatchNoCastHoleDiameter = 30.0;
@@ -310,6 +315,131 @@ namespace casting {
                 }
             }
             return intersections;
+        }
+
+        double pointToSegmentDistance2D(const Vector2& point, const Vector2& a, const Vector2& b) {
+            Vector2 ab = b - a;
+            double denom = ab.x * ab.x + ab.y * ab.y;
+            if (denom <= std::numeric_limits<double>::epsilon()) {
+                return distance2D(point, a);
+            }
+            double t = ((point.x - a.x) * ab.x + (point.y - a.y) * ab.y) / denom;
+            t = std::clamp(t, 0.0, 1.0);
+            Vector2 projection = { a.x + ab.x * t, a.y + ab.y * t };
+            return distance2D(point, projection);
+        }
+
+        bool rayIntersectsTriangle(const Vector3& origin, const Vector3& direction,
+            const Vector3& a, const Vector3& b, const Vector3& c, double* outT = nullptr) {
+            Vector3 edge1 = b - a;
+            Vector3 edge2 = c - a;
+            Vector3 pvec = cross(direction, edge2);
+            double det = dot(edge1, pvec);
+            if (std::abs(det) <= kRayHitEpsilon) {
+                return false;
+            }
+            double invDet = 1.0 / det;
+            Vector3 tvec = origin - a;
+            double u = dot(tvec, pvec) * invDet;
+            if (u < -kRayHitEpsilon || u > 1.0 + kRayHitEpsilon) {
+                return false;
+            }
+            Vector3 qvec = cross(tvec, edge1);
+            double v = dot(direction, qvec) * invDet;
+            if (v < -kRayHitEpsilon || u + v > 1.0 + kRayHitEpsilon) {
+                return false;
+            }
+            double t = dot(edge2, qvec) * invDet;
+            if (t <= kRayHitEpsilon) {
+                return false;
+            }
+            if (outT) {
+                *outT = t;
+            }
+            return true;
+        }
+
+        bool isPointInsideMesh(const Mesh& mesh, const Vector3& point) {
+            Vector3 rayDir = normalized(Vector3{ 1.0, 0.1231, 0.4567 });
+            std::size_t hitCount = 0;
+            for (const auto& tri : mesh.triangles) {
+                const Vector3& a = mesh.vertices.at(tri.v0);
+                const Vector3& b = mesh.vertices.at(tri.v1);
+                const Vector3& c = mesh.vertices.at(tri.v2);
+                if (rayIntersectsTriangle(point, rayDir, a, b, c)) {
+                    ++hitCount;
+                }
+            }
+            return (hitCount % 2U) == 1U;
+        }
+
+        bool hasDirectionalOcclusion(const Mesh& mesh, const Vector3& origin, const Vector3& direction) {
+            Vector3 rayDir = normalized(direction);
+            Vector3 shiftedOrigin = origin + rayDir * kMinProbeDistance * 0.2;
+            for (const auto& tri : mesh.triangles) {
+                const Vector3& a = mesh.vertices.at(tri.v0);
+                const Vector3& b = mesh.vertices.at(tri.v1);
+                const Vector3& c = mesh.vertices.at(tri.v2);
+                if (rayIntersectsTriangle(shiftedOrigin, rayDir, a, b, c)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        struct ProjectionContourData {
+            PlaneBasis basis{};
+            std::vector<Vector2> hull;
+            double projectedArea = 0.0;
+        };
+
+        ProjectionContourData computeProjectionContour(const Mesh& mesh, const Vector3& demoldDirection) {
+            ProjectionContourData data;
+            data.basis = buildPlaneBasis(computeCentroid(mesh), demoldDirection);
+            std::vector<Vector2> projected;
+            projected.reserve(mesh.vertices.size());
+            for (const auto& vertex : mesh.vertices) {
+                projected.push_back(projectToPlane(vertex, data.basis));
+            }
+            data.hull = computeConvexHull2D(projected);
+            data.projectedArea = 0.0;
+            if (data.hull.size() >= 3) {
+                double area2 = 0.0;
+                for (std::size_t i = 0; i < data.hull.size(); ++i) {
+                    const Vector2& a = data.hull[i];
+                    const Vector2& b = data.hull[(i + 1) % data.hull.size()];
+                    area2 += a.x * b.y - b.x * a.y;
+                }
+                data.projectedArea = std::abs(area2) * 0.5;
+            }
+            return data;
+        }
+
+        bool isProjectedConcavityCandidate(const Vector3& point, const ProjectionContourData& contourData,
+            double* gapToHull = nullptr) {
+            if (contourData.hull.size() < 3) {
+                if (gapToHull) {
+                    *gapToHull = 0.0;
+                }
+                return false;
+            }
+            Vector2 uv = projectToPlane(point, contourData.basis);
+            if (!pointInPolygon2D(uv, contourData.hull)) {
+                if (gapToHull) {
+                    *gapToHull = 0.0;
+                }
+                return false;
+            }
+            double minGap = std::numeric_limits<double>::max();
+            for (std::size_t i = 0; i < contourData.hull.size(); ++i) {
+                const Vector2& a = contourData.hull[i];
+                const Vector2& b = contourData.hull[(i + 1) % contourData.hull.size()];
+                minGap = std::min(minGap, pointToSegmentDistance2D(uv, a, b));
+            }
+            if (gapToHull) {
+                *gapToHull = minGap;
+            }
+            return minGap > kClosureTolerance * 10.0;
         }
 
         Bounds computeLocalBounds(const Mesh& mesh, const PlaneBasis& basis) {
@@ -1357,13 +1487,75 @@ namespace casting {
             }
             double draftThreshold = std::sin(degreesToRadians(draftAngleDegrees));
             Vector3 dir = normalized(direction);
-            std::vector<bool> isUndercut(mesh.triangles.size(), false);
-            for (std::size_t index = 0; index < mesh.triangles.size(); ++index) {
-                Vector3 normal = triangleNormal(mesh, mesh.triangles[index]);
-                isUndercut[index] = dot(normal, dir) < -draftThreshold;
-            }
+            Bounds meshBounds = computeBounds(mesh);
+            Vector3 meshSize = meshBounds.max - meshBounds.min;
+            double minWallLike = std::min({ std::abs(meshSize.x), std::abs(meshSize.y), std::abs(meshSize.z) });
+            double sideProbeDistance = std::max(kMinProbeDistance, minWallLike * kSideProbeDistanceRatio);
+            ProjectionContourData contourData = computeProjectionContour(mesh, dir);
             auto adjacency = buildTriangleAdjacency(mesh);
+
+            std::vector<bool> reverseUndercut(mesh.triangles.size(), false);
+            std::vector<bool> sideUndercut(mesh.triangles.size(), false);
+            std::vector<bool> complexUndercut(mesh.triangles.size(), false);
+            std::vector<bool> projectedConcavity(mesh.triangles.size(), false);
+            std::vector<bool> directionalBlocked(mesh.triangles.size(), false);
+
+            for (std::size_t index = 0; index < mesh.triangles.size(); ++index) {
+                const Triangle& tri = mesh.triangles[index];
+                Vector3 normal = normalized(triangleNormal(mesh, tri));
+                Vector3 centroid = triangleCentroid(mesh, tri);
+                double alignment = dot(normal, dir);
+                double absAlignment = std::abs(alignment);
+
+                reverseUndercut[index] = alignment < -draftThreshold;
+                projectedConcavity[index] = isProjectedConcavityCandidate(centroid, contourData);
+
+                directionalBlocked[index] = hasDirectionalOcclusion(mesh, centroid, dir) ||
+                    hasDirectionalOcclusion(mesh, centroid, dir * -1.0);
+
+                if (!reverseUndercut[index] && absAlignment < kSideUndercutAlignmentThreshold) {
+                    Vector3 probePoint = centroid + normal * sideProbeDistance;
+                    bool insideProbe = isPointInsideMesh(mesh, probePoint);
+                    sideUndercut[index] = insideProbe && (directionalBlocked[index] || projectedConcavity[index]);
+                }
+
+                if (!reverseUndercut[index] && !sideUndercut[index] &&
+                    absAlignment >= kSideUndercutAlignmentThreshold &&
+                    absAlignment < kComplexUndercutAlignmentThreshold) {
+                    bool angleAndBlock = (alignment < 0.0 && directionalBlocked[index]);
+                    complexUndercut[index] = angleAndBlock || projectedConcavity[index];
+                }
+            }
+
+            for (std::size_t index = 0; index < mesh.triangles.size(); ++index) {
+                if (!complexUndercut[index]) {
+                    continue;
+                }
+                bool nearUndercutNeighbor = false;
+                for (std::size_t neighbor : adjacency[index]) {
+                    if (reverseUndercut[neighbor] || sideUndercut[neighbor] || complexUndercut[neighbor]) {
+                        nearUndercutNeighbor = true;
+                        break;
+                    }
+                }
+                if (!nearUndercutNeighbor && !directionalBlocked[index]) {
+                    complexUndercut[index] = false;
+                }
+            }
+
+            std::vector<bool> isUndercut(mesh.triangles.size(), false);
+            for (std::size_t i = 0; i < mesh.triangles.size(); ++i) {
+                isUndercut[i] = reverseUndercut[i] || sideUndercut[i] || complexUndercut[i];
+            }
+
             std::vector<bool> visited(mesh.triangles.size(), false);
+            double totalArea = 0.0;
+            for (const auto& tri : mesh.triangles) {
+                totalArea += triangleArea(mesh, tri);
+            }
+            std::size_t reverseFaceCount = 0;
+            std::size_t sideFaceCount = 0;
+            std::size_t complexFaceCount = 0;
             for (std::size_t index = 0; index < mesh.triangles.size(); ++index) {
                 if (!isUndercut[index] || visited[index]) {
                     continue;
@@ -1379,11 +1571,28 @@ namespace casting {
                 bounds.max = { std::numeric_limits<double>::lowest(),
                               std::numeric_limits<double>::lowest(),
                               std::numeric_limits<double>::lowest() };
+                std::size_t reverseCount = 0;
+                std::size_t sideCount = 0;
+                std::size_t complexCount = 0;
+                Vector3 averagedNormal{};
+                double regionArea = 0.0;
                 while (!stack.empty()) {
                     std::size_t current = stack.back();
                     stack.pop_back();
                     region.triangleIndices.push_back(current);
-                    Vector3 centroid = triangleCentroid(mesh, mesh.triangles[current]);
+                    const Triangle& tri = mesh.triangles[current];
+                    Vector3 centroid = triangleCentroid(mesh, tri);
+                    Vector3 triNormal = normalized(triangleNormal(mesh, tri));
+                    double triArea = triangleArea(mesh, tri);
+                    regionArea += triArea;
+                    averagedNormal += triNormal * triArea;
+                    if (reverseUndercut[current]) {
+                        ++reverseCount;
+                    } else if (sideUndercut[current]) {
+                        ++sideCount;
+                    } else {
+                        ++complexCount;
+                    }
                     bounds.min.x = std::min(bounds.min.x, centroid.x);
                     bounds.min.y = std::min(bounds.min.y, centroid.y);
                     bounds.min.z = std::min(bounds.min.z, centroid.z);
@@ -1397,10 +1606,81 @@ namespace casting {
                         }
                     }
                 }
+                if (regionArea < std::max(totalArea, kClosureTolerance) * 0.001) {
+                    continue;
+                }
+                averagedNormal = normalized(averagedNormal);
                 region.bounds = bounds;
+                if (reverseCount >= sideCount && reverseCount >= complexCount) {
+                    region.undercutType = UndercutType::Reverse;
+                    region.pullDirection = dir;
+                    region.undercutDepth = rangeAlongDirection(collectRegionVertices(mesh, region), dir);
+                    reverseFaceCount += reverseCount;
+                } else if (sideCount >= reverseCount && sideCount >= complexCount) {
+                    region.undercutType = UndercutType::Side;
+                    Vector3 sideDirection = averagedNormal - dir * dot(averagedNormal, dir);
+                    if (length(sideDirection) <= std::numeric_limits<double>::epsilon()) {
+                        Vector3 reference = std::abs(dir.x) < 0.95 ? Vector3{ 1.0, 0.0, 0.0 } :
+                            Vector3{ 0.0, 1.0, 0.0 };
+                        sideDirection = reference - dir * dot(reference, dir);
+                    }
+                    sideDirection = normalized(sideDirection);
+                    std::array<Vector3, 3> axisPriority{{
+                        {1.0, 0.0, 0.0},
+                        {0.0, 1.0, 0.0},
+                        {0.0, 0.0, 1.0}
+                    }};
+                    double bestAxisAlignment = 0.0;
+                    Vector3 snappedDirection = sideDirection;
+                    for (const auto& axis : axisPriority) {
+                        double axisAlignment = std::abs(dot(sideDirection, axis));
+                        if (axisAlignment > bestAxisAlignment) {
+                            bestAxisAlignment = axisAlignment;
+                            snappedDirection = dot(sideDirection, axis) >= 0.0 ? axis : axis * -1.0;
+                        }
+                    }
+                    region.pullDirection = bestAxisAlignment > 0.9 ? snappedDirection : sideDirection;
+                    region.undercutDepth =
+                        rangeAlongDirection(collectRegionVertices(mesh, region), region.pullDirection);
+                    sideFaceCount += sideCount;
+                } else {
+                    region.undercutType = UndercutType::Complex;
+                    Vector3 sideDirection = averagedNormal - dir * dot(averagedNormal, dir);
+                    if (length(sideDirection) <= std::numeric_limits<double>::epsilon()) {
+                        sideDirection = dir;
+                    } else {
+                        sideDirection = normalized(sideDirection);
+                    }
+                    double primaryDepth = rangeAlongDirection(collectRegionVertices(mesh, region), dir);
+                    double lateralDepth = rangeAlongDirection(collectRegionVertices(mesh, region), sideDirection);
+                    if (lateralDepth > primaryDepth) {
+                        region.pullDirection = sideDirection;
+                        region.undercutDepth = lateralDepth;
+                    } else {
+                        region.pullDirection = dir;
+                        region.undercutDepth = primaryDepth;
+                    }
+                    complexFaceCount += complexCount;
+                }
                 regions.push_back(region);
             }
+            (void)reverseFaceCount;
+            (void)sideFaceCount;
+            (void)complexFaceCount;
             return regions;
+        }
+
+        const char* undercutTypeName(UndercutType type) {
+            switch (type) {
+            case UndercutType::Reverse:
+                return "reverse";
+            case UndercutType::Side:
+                return "side";
+            case UndercutType::Complex:
+                return "complex";
+            default:
+                return "unknown";
+            }
         }
 
         struct NonCastDecision {
@@ -2304,6 +2584,9 @@ namespace casting {
                 }
                 std::vector<Vector3> candidates =
                     buildRegionCandidateDirections(demold.direction, averageNormal);
+                if (length(region.pullDirection) > std::numeric_limits<double>::epsilon()) {
+                    candidates.insert(candidates.begin(), normalized(region.pullDirection));
+                }
 
                 bool foundSlide = false;
                 DemoldEvaluation bestSlide{};
@@ -2587,8 +2870,46 @@ namespace casting {
         std::vector<CoreRegion> undercutRegions = detectCoreRegions(result.cleanedMesh,
             result.demold.direction,
             settings.draftAngleDegrees);
+        std::size_t reverseCount = 0;
+        std::size_t sideCount = 0;
+        std::size_t complexCount = 0;
+        for (const auto& region : undercutRegions) {
+            if (region.undercutType == UndercutType::Reverse) {
+                ++reverseCount;
+            } else if (region.undercutType == UndercutType::Side) {
+                ++sideCount;
+            } else {
+                ++complexCount;
+            }
+            std::ostringstream oss;
+            oss << "detectCoreRegions region#" << region.id
+                << " type=" << undercutTypeName(region.undercutType)
+                << " depth=" << region.undercutDepth
+                << " pull=(" << region.pullDirection.x << ", " << region.pullDirection.y
+                << ", " << region.pullDirection.z << ")";
+            result.issues.push_back({ oss.str(), 0.05 });
+        }
+        {
+            std::ostringstream oss;
+            oss << "detectCoreRegions counts reverse=" << reverseCount
+                << ", side=" << sideCount
+                << ", complex=" << complexCount
+                << ", projectionHullArea="
+                << computeProjectionContour(result.cleanedMesh, result.demold.direction).projectedArea;
+            result.issues.push_back({ oss.str(), 0.05 });
+        }
         std::vector<CoreRegion> regionClassifications = classifyCoreRegions(result.cleanedMesh,
             undercutRegions, result.demold.direction, settings);
+        for (const auto& region : regionClassifications) {
+            if (region.generateCore) {
+                continue;
+            }
+            std::string reason = region.nonCastReason.empty()
+                ? "depth/ratio/volume threshold"
+                : region.nonCastReason;
+            result.issues.push_back(
+                { "Filtered core region#" + std::to_string(region.id) + ": " + reason, 0.05 });
+        }
         result.separability = evaluateSeparability(result.cleanedMesh, result.demold, undercutRegions,
             settings, &result.cores);
         if (result.cores.empty()) {

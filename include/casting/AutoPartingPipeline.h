@@ -46,11 +46,18 @@ enum class CoreRegionDetailType {
     ClosedCavity
 };
 
+enum class UndercutType {
+    Reverse,
+    Side,
+    Complex
+};
+
 struct CoreRegion {
     std::size_t id{};
     std::vector<std::size_t> triangleIndices;
     Bounds bounds{};
     Vector3 pullDirection{};
+    UndercutType undercutType = UndercutType::Reverse;
     CoreRegionBasicType basicType = CoreRegionBasicType::NoCore;
     CoreRegionDetailType detailType = CoreRegionDetailType::None;
     bool generateCore = true;
