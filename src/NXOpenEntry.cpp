@@ -270,7 +270,7 @@ std::vector<NXOpen::Body*> extractInternalVolumes(NXOpen::Body* body) {
         return internalBodies;
     }
 
-    // TODO: Implement topological closed-cavity extraction (UF_MODL_ask_body_boundaries / UF_MODL_ask_face_loops).
+    // TODO: 自动提取封闭空腔（UF_MODL_ask_body_boundaries / UF_MODL_ask_face_loops）。
     casting::Bounds moldBounds = askBodyBounds(body->Tag());
     constexpr double kBoundsContainmentTolerance = 1e-4;
     for (NXOpen::Body* candidate : *part->Bodies()) {
@@ -284,6 +284,19 @@ std::vector<NXOpen::Body*> extractInternalVolumes(NXOpen::Body* body) {
         if (isBoundsInside(candidateBounds, moldBounds, kBoundsContainmentTolerance)) {
             internalBodies.push_back(candidate);
         }
+    }
+
+    // 若自动提取为空，提供手动辅助流程框架（复杂 API 暂留 TODO）。
+    if (internalBodies.empty()) {
+        NXOpen::UI* ui = NXOpen::UI::GetUI();
+        if (ui && ui->NXMessageBox()) {
+            ui->NXMessageBox()->Show(
+                "内部砂芯提取",
+                NXOpen::NXMessageBox::DialogTypeInformation,
+                "自动提取未命中，请手动选择封闭空腔内表面（当前为框架实现）。");
+        }
+        // TODO: 调用 UF_UI_select_with_class_dialog 选择内表面（Face）。
+        // TODO: 对所选面执行缝合/抽取并封闭，生成独立内部砂芯实体并加入 internalBodies。
     }
     return internalBodies;
 }
@@ -558,6 +571,8 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
         return;
     }
 
+    // 新逻辑：包容盒减法提取砂芯。
+#ifdef DEBUG_ENVELOPE_SUBTRACTION
     // 中文步骤1：基于 cavityBounds 扩展 20mm，构建提取包容盒。
     NXOpen::Body* envelopeBody = nullptr;
     NXOpen::Body* intermediateBody = nullptr;
@@ -586,19 +601,27 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
     std::vector<NXOpen::Body*> internalCores;
     std::vector<NXOpen::Body*> externalCores;
     if (intermediateBody) {
-        internalCores = extractInternalCoresManually(part, intermediateBody);
+        internalCores = extractInternalVolumes(intermediateBody);
         for (NXOpen::Body* coreBody : internalCores) {
             if (!coreBody) {
                 continue;
             }
             UF_OBJ_set_color(coreBody->Tag(), casting::kCoreColor);
             UF_OBJ_set_layer(coreBody->Tag(), casting::kSandCoreBaseLayer);
-            applyBooleanFeature(part, intermediateBody, coreBody,
-                                NXOpen::Features::Feature::BooleanTypeSubtract, true);
         }
 
-        // 中文步骤4：剩余体按连通域分离，作为外部砂芯。
-        externalCores = splitIntoConnectedBodies(intermediateBody);
+        // 中文步骤4：intermediateBody 减去内部砂芯（不保留工具体），得到外部体积。
+        NXOpen::Body* externalVolume = intermediateBody;
+        for (NXOpen::Body* coreBody : internalCores) {
+            if (!coreBody || !externalVolume) {
+                continue;
+            }
+            applyBooleanFeature(part, externalVolume, coreBody,
+                                NXOpen::Features::Feature::BooleanTypeSubtract, false);
+        }
+
+        // 中文步骤5：剩余体按连通域分离，作为外部砂芯。
+        externalCores = splitIntoConnectedBodies(externalVolume);
         for (NXOpen::Body* coreBody : externalCores) {
             if (!coreBody) {
                 continue;
@@ -622,11 +645,11 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
 
     // 中文步骤6：最后执行 upperBody - partBody 与 lowerBody - partBody（不保留工具体）。
     if (partBody) {
-        // 先保留一次工具体，确保同一零件体可用于两次减法；最后一次不保留。
+        // 为保证零件实体独立保留，工具体不删除。
         applyBooleanFeature(part, upperBody, partBody,
                             NXOpen::Features::Feature::BooleanTypeSubtract, true);
         applyBooleanFeature(part, lowerBody, partBody,
-                            NXOpen::Features::Feature::BooleanTypeSubtract, false);
+                            NXOpen::Features::Feature::BooleanTypeSubtract, true);
     }
 
     // 中文步骤7：清理临时体 envelopeBody / intermediateBody。
@@ -637,11 +660,39 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
     if (intermediateBody) {
         tempBodyTags.push_back(intermediateBody->Tag());
     }
+    // 避免误删已作为独立砂芯保留的实体。
+    std::vector<tag_t> protectedCoreTags;
+    for (NXOpen::Body* coreBody : internalCores) {
+        if (coreBody) {
+            protectedCoreTags.push_back(coreBody->Tag());
+        }
+    }
+    for (NXOpen::Body* coreBody : externalCores) {
+        if (coreBody) {
+            protectedCoreTags.push_back(coreBody->Tag());
+        }
+    }
+    std::sort(protectedCoreTags.begin(), protectedCoreTags.end());
+    protectedCoreTags.erase(std::unique(protectedCoreTags.begin(), protectedCoreTags.end()),
+                            protectedCoreTags.end());
+
     std::sort(tempBodyTags.begin(), tempBodyTags.end());
     tempBodyTags.erase(std::unique(tempBodyTags.begin(), tempBodyTags.end()), tempBodyTags.end());
     for (tag_t bodyTag : tempBodyTags) {
+        if (std::binary_search(protectedCoreTags.begin(), protectedCoreTags.end(), bodyTag)) {
+            continue;
+        }
         UF_OBJ_delete_object(bodyTag);
     }
+#else
+    // 旧逻辑：仅做模具毛坯减零件。
+    if (partBody) {
+        applyBooleanFeature(part, upperBody, partBody,
+                            NXOpen::Features::Feature::BooleanTypeSubtract, true);
+        applyBooleanFeature(part, lowerBody, partBody,
+                            NXOpen::Features::Feature::BooleanTypeSubtract, true);
+    }
+#endif
 }
 
 void MyClass::showSandCoreRecursive(const casting::SandCore& sandCore) {
