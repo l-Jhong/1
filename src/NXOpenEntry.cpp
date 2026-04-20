@@ -517,7 +517,8 @@ public:
     void print(const string&);
     void print(const char*);
     void highlightPartingSurface(const std::vector<casting::Vector3>& boundary);
-    void showMoldAssembly(const casting::MoldAssembly& assembly);
+    void showMoldAssembly(const casting::MoldAssembly& assembly,
+                          const std::vector<casting::Vector3>& contourBoundary);
     void showSandCores(const std::vector<casting::SandCore>& sandCores);
     void showSandCoreRecursive(const casting::SandCore& sandCore);
 
@@ -593,7 +594,8 @@ void MyClass::highlightPartingSurface(const std::vector<casting::Vector3>& bound
     }
 }
 
-void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
+void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
+                               const std::vector<casting::Vector3>& contourBoundary) {
     if (!workPart) {
         return;
     }
@@ -713,15 +715,18 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
             maxProj = std::max(maxProj, v);
         }
 
-        // TODO: Use result.maxContour.boundary here; currently approximated by partGlobalBounds footprint.
-        std::vector<casting::Vector3> contourBoundary = {
-            {partGlobalBounds.min.x, partGlobalBounds.min.y, partGlobalBounds.min.z},
-            {partGlobalBounds.max.x, partGlobalBounds.min.y, partGlobalBounds.min.z},
-            {partGlobalBounds.max.x, partGlobalBounds.max.y, partGlobalBounds.min.z},
-            {partGlobalBounds.min.x, partGlobalBounds.max.y, partGlobalBounds.min.z},
-            {partGlobalBounds.min.x, partGlobalBounds.min.y, partGlobalBounds.min.z}
-        };
-        contourBodyB = createExactContourExtrusion(contourBoundary, pullDir, minProj, maxProj);
+        // Use result.maxContour.boundary when available; fall back to partGlobalBounds footprint.
+        std::vector<casting::Vector3> resolvedContour = contourBoundary;
+        if (resolvedContour.size() < 3) {
+            resolvedContour = {
+                {partGlobalBounds.min.x, partGlobalBounds.min.y, partGlobalBounds.min.z},
+                {partGlobalBounds.max.x, partGlobalBounds.min.y, partGlobalBounds.min.z},
+                {partGlobalBounds.max.x, partGlobalBounds.max.y, partGlobalBounds.min.z},
+                {partGlobalBounds.min.x, partGlobalBounds.max.y, partGlobalBounds.min.z},
+                {partGlobalBounds.min.x, partGlobalBounds.min.y, partGlobalBounds.min.z}
+            };
+        }
+        contourBodyB = createExactContourExtrusion(resolvedContour, pullDir, minProj, maxProj);
 
         excessBody = cloneBody(intermediateBody);
 
@@ -885,7 +890,7 @@ void MyClass::do_it() {
     print(stream.str());
 
     highlightPartingSurface(result.partingSurface.boundary);
-    showMoldAssembly(result.moldAssembly);
+    showMoldAssembly(result.moldAssembly, result.maxContour.boundary);
     showSandCores(result.sandCores);
 }
 
