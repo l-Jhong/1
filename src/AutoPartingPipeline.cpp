@@ -34,7 +34,6 @@ namespace casting {
         constexpr double kUndercutWarningRatio = 0.2;
         constexpr double kInvalidScore = -std::numeric_limits<double>::infinity();
         constexpr double kClosureTolerance = 1e-6;
-        constexpr double kInternalCavityMarginRatio = 0.08;
         constexpr double kStrategyObstaclePenalty = 0.2;
         constexpr double kStrategyCorePenalty = 0.1;
         constexpr double kStrategyCorePreferencePenalty = 0.05;
@@ -642,12 +641,23 @@ namespace casting {
                 candidates.push_back(normalized(averageNormal));
             }
             DemoldEvaluation best{ candidates.front(), kInvalidScore, 0.0, 0.0 };
+            double bestProjectedArea = -1.0;
             for (const auto& candidate : candidates) {
                 DemoldEvaluation eval =
                     evaluateDemoldDirection(mesh, candidate, settings.draftAngleDegrees,
                         settings.undercutPenalty, settings.visibilityPenalty);
-                if (eval.score > best.score) {
+                double projectedArea = computeProjectionContour(mesh, candidate).projectedArea;
+                bool better = projectedArea > bestProjectedArea + kSliceAreaEpsilon;
+                if (!better && std::abs(projectedArea - bestProjectedArea) <= kSliceAreaEpsilon) {
+                    better = eval.score > best.score;
+                }
+                if (!better && std::abs(projectedArea - bestProjectedArea) <= kSliceAreaEpsilon &&
+                    std::abs(eval.score - best.score) <= kSliceAreaEpsilon) {
+                    better = eval.undercutRatio < best.undercutRatio;
+                }
+                if (better) {
                     best = eval;
+                    bestProjectedArea = projectedArea;
                 }
             }
             return best;
@@ -1753,8 +1763,7 @@ namespace casting {
             const Vector3& demoldDirection,
             CastingMaterial material,
             ProductionBatch batch,
-            const Bounds& meshBounds,
-            double meshVolume) {
+            const Bounds& meshBounds) {
             CoreRegion region = input;
             std::vector<Vector3> regionVertices = collectRegionVertices(mesh, region);
             if (regionVertices.empty()) {
@@ -1898,13 +1907,6 @@ namespace casting {
                 }
             }
 
-            if (meshVolume > std::numeric_limits<double>::epsilon()) {
-                double ratio = boundsVolume(region.bounds) / meshVolume;
-                if (ratio < 0.01) {
-                    needCore = false;
-                }
-            }
-
             int directionalDemands = 0;
             if (slice.hasHook) {
                 ++directionalDemands;
@@ -1927,10 +1929,6 @@ namespace casting {
                 needCore = false;
             }
             region.generateCore = needCore;
-            if (!needCore) {
-                region.basicType = CoreRegionBasicType::NoCore;
-                region.detailType = CoreRegionDetailType::None;
-            }
             return region;
         }
 
@@ -1943,11 +1941,10 @@ namespace casting {
                 return classified;
             }
             Bounds meshBounds = computeBounds(mesh);
-            double meshVolume = boundsVolume(meshBounds);
             classified.reserve(regions.size());
             for (const auto& region : regions) {
                 classified.push_back(classifyCoreRegion(mesh, region, demoldDirection,
-                    settings.castingMaterial, settings.productionBatch, meshBounds, meshVolume));
+                    settings.castingMaterial, settings.productionBatch, meshBounds));
             }
 
             std::vector<std::size_t> internalIds;
@@ -1993,21 +1990,35 @@ namespace casting {
             };
             std::vector<CoreScore> scored;
             scored.reserve(cores.size());
+            std::vector<CoreScore> fallbackScored;
+            fallbackScored.reserve(cores.size());
             for (const auto& core : cores) {
                 if (!core.generateCore) {
                     continue;
                 }
                 double volume = boundsVolume(core.bounds);
+                fallbackScored.push_back({ core, volume });
                 double ratio = volume / meshVolume;
                 if (ratio < settings.minCoreVolumeRatio) {
                     continue;
                 }
                 scored.push_back({ core, volume });
             }
+            // Prefer internal-cavity cores first, then keep larger cores ahead of smaller ones.
+            auto coreComparator = [](const CoreScore& left, const CoreScore& right) {
+                bool leftInternal = left.region.basicType == CoreRegionBasicType::InternalCore;
+                bool rightInternal = right.region.basicType == CoreRegionBasicType::InternalCore;
+                if (leftInternal != rightInternal) {
+                    return leftInternal;
+                }
+                return left.volume > right.volume;
+            };
             std::sort(scored.begin(), scored.end(),
-                [](const CoreScore& left, const CoreScore& right) {
-                    return left.volume > right.volume;
-                });
+                coreComparator);
+            if (scored.empty() && !fallbackScored.empty()) {
+                std::sort(fallbackScored.begin(), fallbackScored.end(), coreComparator);
+                scored.push_back(fallbackScored.front());
+            }
             std::size_t limit = settings.maxCoreCount == 0 ? scored.size()
                 : std::min(settings.maxCoreCount, scored.size());
             filtered.reserve(limit);
@@ -2555,12 +2566,6 @@ namespace casting {
             if (!coreRegionsOut) {
                 return report;
             }
-            Bounds meshBounds = computeBounds(mesh);
-            Vector3 meshSize = meshBounds.max - meshBounds.min;
-            double internalMarginX = std::abs(meshSize.x) * kInternalCavityMarginRatio;
-            double internalMarginY = std::abs(meshSize.y) * kInternalCavityMarginRatio;
-            double internalMarginZ = std::abs(meshSize.z) * kInternalCavityMarginRatio;
-
             for (const auto& region : undercuts) {
                 ObstacleRegion obstacle;
                 obstacle.triangleIndices = region.triangleIndices;
@@ -2603,27 +2608,39 @@ namespace casting {
                     }
                 }
 
-                if (foundSlide) {
+                bool isInternalCore = region.basicType == CoreRegionBasicType::InternalCore;
+                bool keepAsCore = region.generateCore && region.castFeature;
+                if (isInternalCore && keepAsCore) {
+                    obstacle.type = ObstacleType::CoreCandidate;
+                    obstacle.suggestedDirection =
+                        length(region.pullDirection) > std::numeric_limits<double>::epsilon()
+                        ? normalized(region.pullDirection)
+                        : bestFallback.direction;
+                    obstacle.visibilityRatio = bestFallback.visibilityRatio;
+                    obstacle.undercutRatio = bestFallback.undercutRatio;
+                    coreRegionsOut->push_back(region);
+                    obstacle.coreId = region.id;
+                    obstacle.corePreferred = true;
+                }
+                else if (foundSlide && !keepAsCore) {
                     obstacle.type = ObstacleType::SlideCandidate;
                     obstacle.suggestedDirection = bestSlide.direction;
                     obstacle.visibilityRatio = bestSlide.visibilityRatio;
                     obstacle.undercutRatio = bestSlide.undercutRatio;
                 }
                 else {
-                    bool internal =
-                        region.bounds.min.x > meshBounds.min.x + internalMarginX &&
-                        region.bounds.min.y > meshBounds.min.y + internalMarginY &&
-                        region.bounds.min.z > meshBounds.min.z + internalMarginZ &&
-                        region.bounds.max.x < meshBounds.max.x - internalMarginX &&
-                        region.bounds.max.y < meshBounds.max.y - internalMarginY &&
-                        region.bounds.max.z < meshBounds.max.z - internalMarginZ;
-                    if (internal) {
+                    if (keepAsCore) {
                         obstacle.type = ObstacleType::CoreCandidate;
-                        obstacle.suggestedDirection = bestFallback.direction;
+                        obstacle.suggestedDirection =
+                            length(region.pullDirection) > std::numeric_limits<double>::epsilon()
+                            ? normalized(region.pullDirection)
+                            : bestFallback.direction;
                         obstacle.visibilityRatio = bestFallback.visibilityRatio;
                         obstacle.undercutRatio = bestFallback.undercutRatio;
                         CoreRegion coreRegion = region;
-                        coreRegion.pullDirection = bestFallback.direction;
+                        if (length(coreRegion.pullDirection) <= std::numeric_limits<double>::epsilon()) {
+                            coreRegion.pullDirection = bestFallback.direction;
+                        }
                         coreRegionsOut->push_back(coreRegion);
                         obstacle.coreId = coreRegion.id;
                         obstacle.corePreferred = true;
@@ -2903,7 +2920,7 @@ namespace casting {
             result.issues.push_back(
                 { "Filtered core region#" + std::to_string(region.id) + ": " + reason, 0.05 });
         }
-        result.separability = evaluateSeparability(result.cleanedMesh, result.demold, undercutRegions,
+        result.separability = evaluateSeparability(result.cleanedMesh, result.demold, regionClassifications,
             settings, &result.cores);
         if (result.cores.empty()) {
             result.cores = regionClassifications;
