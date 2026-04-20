@@ -1553,9 +1553,6 @@ namespace casting {
             for (const auto& tri : mesh.triangles) {
                 totalArea += triangleArea(mesh, tri);
             }
-            std::size_t reverseFaceCount = 0;
-            std::size_t sideFaceCount = 0;
-            std::size_t complexFaceCount = 0;
             for (std::size_t index = 0; index < mesh.triangles.size(); ++index) {
                 if (!isUndercut[index] || visited[index]) {
                     continue;
@@ -1615,7 +1612,6 @@ namespace casting {
                     region.undercutType = UndercutType::Reverse;
                     region.pullDirection = dir;
                     region.undercutDepth = rangeAlongDirection(collectRegionVertices(mesh, region), dir);
-                    reverseFaceCount += reverseCount;
                 } else if (sideCount >= reverseCount && sideCount >= complexCount) {
                     region.undercutType = UndercutType::Side;
                     Vector3 sideDirection = averagedNormal - dir * dot(averagedNormal, dir);
@@ -1642,7 +1638,6 @@ namespace casting {
                     region.pullDirection = bestAxisAlignment > 0.9 ? snappedDirection : sideDirection;
                     region.undercutDepth =
                         rangeAlongDirection(collectRegionVertices(mesh, region), region.pullDirection);
-                    sideFaceCount += sideCount;
                 } else {
                     region.undercutType = UndercutType::Complex;
                     Vector3 sideDirection = averagedNormal - dir * dot(averagedNormal, dir);
@@ -1660,13 +1655,9 @@ namespace casting {
                         region.pullDirection = dir;
                         region.undercutDepth = primaryDepth;
                     }
-                    complexFaceCount += complexCount;
                 }
                 regions.push_back(region);
             }
-            (void)reverseFaceCount;
-            (void)sideFaceCount;
-            (void)complexFaceCount;
             return regions;
         }
 
@@ -2585,6 +2576,8 @@ namespace casting {
                 std::vector<Vector3> candidates =
                     buildRegionCandidateDirections(demold.direction, averageNormal);
                 if (length(region.pullDirection) > std::numeric_limits<double>::epsilon()) {
+                    // Keep obstacle analysis aligned with detectCoreRegions: try the detected
+                    // region pull direction first before generic fallback candidates.
                     candidates.insert(candidates.begin(), normalized(region.pullDirection));
                 }
 
