@@ -32,11 +32,36 @@ struct SplitResult {
     Mesh lower;
 };
 
+enum class CoreRegionBasicType {
+    NoCore,
+    ExternalCore,
+    InternalCore
+};
+
+enum class CoreRegionDetailType {
+    None,
+    ThroughHole,
+    BlindHole,
+    ClosedCavity
+};
+
 struct CoreRegion {
     std::size_t id{};
     std::vector<std::size_t> triangleIndices;
     Bounds bounds{};
     Vector3 pullDirection{};
+    CoreRegionBasicType basicType = CoreRegionBasicType::NoCore;
+    CoreRegionDetailType detailType = CoreRegionDetailType::None;
+    bool generateCore = true;
+    bool requiresSegmentation = false;
+    bool isComposite = false;
+    std::size_t openingCount = 0;
+    double undercutDepth = 0.0;
+    double cavityDepth = 0.0;
+    double lengthDiameterRatio = 0.0;
+    double minWallThickness = 0.0;
+    std::vector<double> segmentationPositions;
+    std::vector<std::size_t> childRegionIds;
 };
 
 enum class CastingMaterial {
@@ -212,7 +237,7 @@ struct AutoPartingSettings {
     bool preferPlanarSurface = true;
     double nonPlanarDeviationRatio = 0.08;
     std::size_t maxCoreCount = 1;
-    double minCoreVolumeRatio = 0.02;
+    double minCoreVolumeRatio = 0.01;
     // Material used by manufacturability checks (minimum wall-thickness thresholds).
     CastingMaterial castingMaterial = CastingMaterial::CastIron;
 };

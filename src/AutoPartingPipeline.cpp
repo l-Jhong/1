@@ -272,6 +272,39 @@ namespace casting {
             return false;
         }
 
+        bool pointInPolygon2D(const Vector2& point, const std::vector<Vector2>& polygon) {
+            if (polygon.size() < 3) {
+                return false;
+            }
+            bool inside = false;
+            for (std::size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
+                const Vector2& a = polygon[i];
+                const Vector2& b = polygon[j];
+                bool intersects = ((a.y > point.y) != (b.y > point.y)) &&
+                    (point.x < (b.x - a.x) * (point.y - a.y) / ((b.y - a.y) + 1e-12) + a.x);
+                if (intersects) {
+                    inside = !inside;
+                }
+            }
+            return inside;
+        }
+
+        std::size_t countPolygonIntersections2D(const std::vector<Vector2>& lhs,
+            const std::vector<Vector2>& rhs) {
+            if (lhs.size() < 2 || rhs.size() < 2) {
+                return 0;
+            }
+            std::size_t intersections = 0;
+            for (std::size_t i = 0; i + 1 < lhs.size(); ++i) {
+                for (std::size_t j = 0; j + 1 < rhs.size(); ++j) {
+                    if (segmentsIntersect2D(lhs[i], lhs[i + 1], rhs[j], rhs[j + 1])) {
+                        ++intersections;
+                    }
+                }
+            }
+            return intersections;
+        }
+
         Bounds computeLocalBounds(const Mesh& mesh, const PlaneBasis& basis) {
             Bounds bounds{};
             bounds.min = { std::numeric_limits<double>::max(),
@@ -1116,6 +1149,199 @@ namespace casting {
             return adjacency;
         }
 
+        struct RegionSliceAnalysis {
+            bool hasHook = false;
+            double maxCurvatureDeg = 0.0;
+            double lengthDiameterRatio = 0.0;
+            double minWallThickness = 0.0;
+            std::vector<double> segmentationPositions;
+        };
+
+        std::vector<Vector3> collectRegionVertices(const Mesh& mesh, const CoreRegion& region) {
+            std::vector<Vector3> points;
+            points.reserve(region.triangleIndices.size() * 3);
+            for (std::size_t triIndex : region.triangleIndices) {
+                const Triangle& tri = mesh.triangles.at(triIndex);
+                points.push_back(mesh.vertices.at(tri.v0));
+                points.push_back(mesh.vertices.at(tri.v1));
+                points.push_back(mesh.vertices.at(tri.v2));
+            }
+            return points;
+        }
+
+        std::vector<Vector2> buildProjectedHull(const std::vector<Vector3>& points, const PlaneBasis& basis) {
+            std::vector<Vector2> projected;
+            projected.reserve(points.size());
+            for (const auto& point : points) {
+                projected.push_back(projectToPlane(point, basis));
+            }
+            projected = deduplicatePoints2D(projected, kSliceIntersectionTolerance * 10.0);
+            if (projected.size() < 3) {
+                return {};
+            }
+            std::vector<Vector2> hull = computeConvexHull2D(projected);
+            if (hull.size() < 3) {
+                return {};
+            }
+            return closeLoop2D(hull);
+        }
+
+        double rangeAlongDirection(const std::vector<Vector3>& points, const Vector3& direction) {
+            if (points.empty()) {
+                return 0.0;
+            }
+            Vector3 dir = normalized(direction);
+            double minDot = std::numeric_limits<double>::max();
+            double maxDot = std::numeric_limits<double>::lowest();
+            for (const auto& point : points) {
+                double projection = dot(point, dir);
+                minDot = std::min(minDot, projection);
+                maxDot = std::max(maxDot, projection);
+            }
+            return std::max(0.0, maxDot - minDot);
+        }
+
+        double estimateMinWallThickness(const Bounds& regionBounds, const Bounds& meshBounds) {
+            double d0 = std::abs(regionBounds.min.x - meshBounds.min.x);
+            double d1 = std::abs(meshBounds.max.x - regionBounds.max.x);
+            double d2 = std::abs(regionBounds.min.y - meshBounds.min.y);
+            double d3 = std::abs(meshBounds.max.y - regionBounds.max.y);
+            double d4 = std::abs(regionBounds.min.z - meshBounds.min.z);
+            double d5 = std::abs(meshBounds.max.z - regionBounds.max.z);
+            return std::min({ d0, d1, d2, d3, d4, d5 });
+        }
+
+        RegionSliceAnalysis analyzeRegionSlices(const Mesh& mesh,
+            const CoreRegion& region,
+            const Vector3& sliceDirection,
+            const Bounds& meshBounds) {
+            RegionSliceAnalysis analysis;
+            std::vector<Vector3> points = collectRegionVertices(mesh, region);
+            if (points.size() < 3) {
+                analysis.minWallThickness = estimateMinWallThickness(region.bounds, meshBounds);
+                return analysis;
+            }
+
+            Vector3 centroid{};
+            for (const auto& point : points) {
+                centroid += point;
+            }
+            centroid = centroid / static_cast<double>(points.size());
+            PlaneBasis basis = buildPlaneBasis(centroid, sliceDirection);
+
+            struct SliceBin {
+                double w{};
+                std::vector<Vector2> uv;
+            };
+
+            double minW = std::numeric_limits<double>::max();
+            double maxW = std::numeric_limits<double>::lowest();
+            std::vector<Vector3> local;
+            local.reserve(points.size());
+            for (const auto& point : points) {
+                Vector3 p = projectToBasis(point, basis);
+                local.push_back(p);
+                minW = std::min(minW, p.z);
+                maxW = std::max(maxW, p.z);
+            }
+            double span = std::max(0.0, maxW - minW);
+            std::size_t slices = std::clamp<std::size_t>(static_cast<std::size_t>(std::ceil(span / 2.5)), 4, 24);
+            double step = span <= kClosureTolerance ? 1.0 : span / static_cast<double>(slices);
+
+            std::vector<SliceBin> bins(slices);
+            for (std::size_t i = 0; i < slices; ++i) {
+                bins[i].w = minW + (static_cast<double>(i) + 0.5) * step;
+            }
+            for (const auto& p : local) {
+                std::size_t index = 0;
+                if (step > kClosureTolerance) {
+                    double normalizedW = (p.z - minW) / step;
+                    index = std::min<std::size_t>(slices - 1,
+                        static_cast<std::size_t>(std::max(0.0, std::floor(normalizedW))));
+                }
+                bins[index].uv.push_back({ p.x, p.y });
+            }
+
+            struct SliceMetric {
+                double w{};
+                double area{};
+                Vector2 center{};
+            };
+            std::vector<SliceMetric> metrics;
+            metrics.reserve(slices);
+            for (auto& bin : bins) {
+                bin.uv = deduplicatePoints2D(bin.uv, kSliceIntersectionTolerance * 10.0);
+                if (bin.uv.size() < 3) {
+                    continue;
+                }
+                std::vector<Vector2> hull = computeConvexHull2D(bin.uv);
+                if (hull.size() < 3) {
+                    continue;
+                }
+                double area = polygonArea2D(hull);
+                if (area <= kSliceAreaEpsilon) {
+                    continue;
+                }
+                Vector2 center{};
+                for (const auto& uv : hull) {
+                    center += uv;
+                }
+                center = center / static_cast<double>(hull.size());
+                metrics.push_back({ bin.w, area, center });
+            }
+
+            if (metrics.size() < 2) {
+                analysis.lengthDiameterRatio = 0.0;
+                analysis.minWallThickness = estimateMinWallThickness(region.bounds, meshBounds);
+                return analysis;
+            }
+
+            for (std::size_t i = 1; i + 1 < metrics.size(); ++i) {
+                if (metrics[i].area > metrics[i - 1].area * 1.05 &&
+                    metrics[i].area > metrics[i + 1].area * 1.05) {
+                    analysis.hasHook = true;
+                    analysis.segmentationPositions.push_back(metrics[i].w);
+                }
+            }
+
+            for (std::size_t i = 1; i + 1 < metrics.size(); ++i) {
+                Vector2 v1 = metrics[i].center - metrics[i - 1].center;
+                Vector2 v2 = metrics[i + 1].center - metrics[i].center;
+                double norm = std::sqrt(v1.x * v1.x + v1.y * v1.y) *
+                    std::sqrt(v2.x * v2.x + v2.y * v2.y);
+                if (norm <= std::numeric_limits<double>::epsilon()) {
+                    continue;
+                }
+                double cosine = std::clamp((v1.x * v2.x + v1.y * v2.y) / norm, -1.0, 1.0);
+                double angle = std::acos(cosine) * 180.0 / kPi;
+                analysis.maxCurvatureDeg = std::max(analysis.maxCurvatureDeg, angle);
+            }
+
+            double avgArea = 0.0;
+            for (const auto& metric : metrics) {
+                avgArea += metric.area;
+            }
+            avgArea /= static_cast<double>(metrics.size());
+            double equivalentDiameter = 2.0 * std::sqrt(std::max(avgArea, 0.0) / kPi);
+            double height = std::max(0.0, metrics.back().w - metrics.front().w);
+            analysis.lengthDiameterRatio =
+                height / std::max(equivalentDiameter, kClosureTolerance);
+            analysis.minWallThickness = estimateMinWallThickness(region.bounds, meshBounds);
+            return analysis;
+        }
+
+        bool isDirectionDistinct(const Vector3& lhs, const Vector3& rhs, double minAngleDegrees) {
+            double denom = length(lhs) * length(rhs);
+            if (denom <= std::numeric_limits<double>::epsilon()) {
+                return false;
+            }
+            double cosine = std::clamp(dot(lhs, rhs) / denom, -1.0, 1.0);
+            double angle = std::acos(cosine) * 180.0 / kPi;
+            return angle >= minAngleDegrees;
+        }
+
+        double boundsVolume(const Bounds& bounds);
+
         std::vector<CoreRegion> detectCoreRegions(const Mesh& mesh, const Vector3& direction,
             double draftAngleDegrees) {
             std::vector<CoreRegion> regions;
@@ -1170,6 +1396,210 @@ namespace casting {
             return regions;
         }
 
+        CoreRegion classifyCoreRegion(const Mesh& mesh,
+            const CoreRegion& input,
+            const Vector3& demoldDirection,
+            CastingMaterial material,
+            const Bounds& meshBounds,
+            double meshVolume) {
+            CoreRegion region = input;
+            std::vector<Vector3> regionVertices = collectRegionVertices(mesh, region);
+            if (regionVertices.empty()) {
+                region.generateCore = false;
+                region.basicType = CoreRegionBasicType::NoCore;
+                return region;
+            }
+
+            Vector3 regionCentroid{};
+            for (const auto& point : regionVertices) {
+                regionCentroid += point;
+            }
+            regionCentroid = regionCentroid / static_cast<double>(regionVertices.size());
+
+            PlaneBasis demoldBasis = buildPlaneBasis(regionCentroid, demoldDirection);
+            std::vector<Vector2> regionHull = buildProjectedHull(regionVertices, demoldBasis);
+            std::vector<Vector2> meshHull = buildProjectedHull(mesh.vertices, demoldBasis);
+
+            bool insideProjection = false;
+            std::size_t openingCount = 0;
+            if (!regionHull.empty() && !meshHull.empty()) {
+                std::size_t intersectionCount = countPolygonIntersections2D(regionHull, meshHull);
+                openingCount = intersectionCount;
+                bool allInside = true;
+                for (const auto& p : regionHull) {
+                    if (!pointInPolygon2D(p, meshHull)) {
+                        allInside = false;
+                        break;
+                    }
+                }
+                insideProjection = allInside && intersectionCount == 0;
+            }
+            region.openingCount = openingCount;
+
+            Vector3 avgNormal{};
+            for (std::size_t triIndex : region.triangleIndices) {
+                avgNormal += triangleNormal(mesh, mesh.triangles.at(triIndex));
+            }
+            avgNormal = normalized(avgNormal);
+            Vector3 demold = normalized(demoldDirection);
+            Vector3 sideDirection = avgNormal - demold * dot(avgNormal, demold);
+            if (length(sideDirection) <= std::numeric_limits<double>::epsilon()) {
+                Vector3 reference = std::abs(demold.x) < 0.95 ? Vector3{ 1.0, 0.0, 0.0 } : Vector3{ 0.0, 1.0, 0.0 };
+                sideDirection = normalized(reference - demold * dot(reference, demold));
+            } else {
+                sideDirection = normalized(sideDirection);
+            }
+
+            if (!insideProjection) {
+                region.basicType = CoreRegionBasicType::ExternalCore;
+                region.pullDirection = sideDirection;
+                region.undercutDepth = rangeAlongDirection(regionVertices, sideDirection);
+            } else {
+                region.basicType = CoreRegionBasicType::InternalCore;
+                Vector3 size = region.bounds.max - region.bounds.min;
+                double tolX = std::max(kClosureTolerance, std::abs(meshBounds.max.x - meshBounds.min.x) * 0.03);
+                double tolY = std::max(kClosureTolerance, std::abs(meshBounds.max.y - meshBounds.min.y) * 0.03);
+                double tolZ = std::max(kClosureTolerance, std::abs(meshBounds.max.z - meshBounds.min.z) * 0.03);
+                struct OpeningCandidate {
+                    bool touch = false;
+                    double score = -1.0;
+                    Vector3 direction{};
+                };
+                std::array<OpeningCandidate, 6> candidates{{
+                    {std::abs(region.bounds.min.x - meshBounds.min.x) <= tolX, std::abs(size.x), {-1.0, 0.0, 0.0}},
+                    {std::abs(region.bounds.max.x - meshBounds.max.x) <= tolX, std::abs(size.x), { 1.0, 0.0, 0.0}},
+                    {std::abs(region.bounds.min.y - meshBounds.min.y) <= tolY, std::abs(size.y), {0.0, -1.0, 0.0}},
+                    {std::abs(region.bounds.max.y - meshBounds.max.y) <= tolY, std::abs(size.y), {0.0,  1.0, 0.0}},
+                    {std::abs(region.bounds.min.z - meshBounds.min.z) <= tolZ, std::abs(size.z), {0.0, 0.0, -1.0}},
+                    {std::abs(region.bounds.max.z - meshBounds.max.z) <= tolZ, std::abs(size.z), {0.0, 0.0,  1.0}}
+                }};
+                OpeningCandidate best{};
+                for (const auto& candidate : candidates) {
+                    if (!candidate.touch) {
+                        continue;
+                    }
+                    if (candidate.score > best.score) {
+                        best = candidate;
+                    }
+                }
+                Vector3 openingDirection = best.direction;
+                if (length(openingDirection) <= std::numeric_limits<double>::epsilon()) {
+                    if (std::abs(size.x) >= std::abs(size.y) && std::abs(size.x) >= std::abs(size.z)) {
+                        openingDirection = { 1.0, 0.0, 0.0 };
+                    } else if (std::abs(size.y) >= std::abs(size.x) && std::abs(size.y) >= std::abs(size.z)) {
+                        openingDirection = { 0.0, 1.0, 0.0 };
+                    } else {
+                        openingDirection = { 0.0, 0.0, 1.0 };
+                    }
+                }
+                region.pullDirection = normalized(openingDirection);
+                region.cavityDepth = rangeAlongDirection(regionVertices, region.pullDirection);
+            }
+
+            Vector3 sliceDirection = region.basicType == CoreRegionBasicType::ExternalCore
+                ? region.pullDirection
+                : (length(region.pullDirection) > std::numeric_limits<double>::epsilon()
+                    ? region.pullDirection
+                    : demoldDirection);
+            RegionSliceAnalysis slice = analyzeRegionSlices(mesh, region, sliceDirection, meshBounds);
+            region.lengthDiameterRatio = slice.lengthDiameterRatio;
+            region.minWallThickness = slice.minWallThickness;
+            region.segmentationPositions = slice.segmentationPositions;
+
+            double depthThreshold = material == CastingMaterial::CastSteel ? 3.0 : 2.0;
+            bool needCore = true;
+
+            if (region.basicType == CoreRegionBasicType::ExternalCore) {
+                if (region.undercutDepth < depthThreshold) {
+                    needCore = false;
+                }
+                region.detailType = CoreRegionDetailType::None;
+            } else {
+                if (region.openingCount == 0) {
+                    region.detailType = CoreRegionDetailType::ClosedCavity;
+                } else if (region.openingCount == 1) {
+                    region.detailType = CoreRegionDetailType::BlindHole;
+                    if (region.lengthDiameterRatio < 2.0) {
+                        needCore = false;
+                    }
+                } else {
+                    region.detailType = CoreRegionDetailType::ThroughHole;
+                    if (region.lengthDiameterRatio < 3.0) {
+                        needCore = false;
+                    }
+                }
+            }
+
+            if (meshVolume > std::numeric_limits<double>::epsilon()) {
+                double ratio = boundsVolume(region.bounds) / meshVolume;
+                if (ratio < 0.01) {
+                    needCore = false;
+                }
+            }
+
+            int directionalDemands = 0;
+            if (slice.hasHook) {
+                ++directionalDemands;
+            }
+            if (region.basicType == CoreRegionBasicType::ExternalCore &&
+                isDirectionDistinct(region.pullDirection, demoldDirection, 25.0)) {
+                ++directionalDemands;
+            }
+
+            bool ratioSplit = region.lengthDiameterRatio > 5.0;
+            bool curvatureSplit = slice.maxCurvatureDeg > 45.0;
+            bool hookSplit = slice.hasHook;
+            bool multiDirectionSplit = directionalDemands >= 2;
+            region.requiresSegmentation = ratioSplit || curvatureSplit || hookSplit || multiDirectionSplit;
+            if (curvatureSplit && region.segmentationPositions.empty()) {
+                region.segmentationPositions.push_back((region.bounds.min.x + region.bounds.max.x) * 0.5);
+            }
+
+            if (region.basicType == CoreRegionBasicType::NoCore) {
+                needCore = false;
+            }
+            region.generateCore = needCore;
+            if (!needCore) {
+                region.basicType = CoreRegionBasicType::NoCore;
+                region.detailType = CoreRegionDetailType::None;
+            }
+            return region;
+        }
+
+        std::vector<CoreRegion> classifyCoreRegions(const Mesh& mesh,
+            const std::vector<CoreRegion>& regions,
+            const Vector3& demoldDirection,
+            const AutoPartingSettings& settings) {
+            std::vector<CoreRegion> classified;
+            if (regions.empty()) {
+                return classified;
+            }
+            Bounds meshBounds = computeBounds(mesh);
+            double meshVolume = boundsVolume(meshBounds);
+            classified.reserve(regions.size());
+            for (const auto& region : regions) {
+                classified.push_back(classifyCoreRegion(mesh, region, demoldDirection,
+                    settings.castingMaterial, meshBounds, meshVolume));
+            }
+
+            std::vector<std::size_t> internalIds;
+            for (const auto& region : classified) {
+                if (region.generateCore && region.basicType == CoreRegionBasicType::InternalCore) {
+                    internalIds.push_back(region.id);
+                }
+            }
+            bool composite = internalIds.size() > 1;
+            if (composite) {
+                for (auto& region : classified) {
+                    if (region.generateCore && region.basicType == CoreRegionBasicType::InternalCore) {
+                        region.isComposite = true;
+                        region.childRegionIds = internalIds;
+                    }
+                }
+            }
+            return classified;
+        }
+
         double boundsVolume(const Bounds& bounds) {
             double dx = std::abs(bounds.max.x - bounds.min.x);
             double dy = std::abs(bounds.max.y - bounds.min.y);
@@ -1196,6 +1626,9 @@ namespace casting {
             std::vector<CoreScore> scored;
             scored.reserve(cores.size());
             for (const auto& core : cores) {
+                if (!core.generateCore) {
+                    continue;
+                }
                 double volume = boundsVolume(core.bounds);
                 double ratio = volume / meshVolume;
                 if (ratio < settings.minCoreVolumeRatio) {
@@ -2031,8 +2464,33 @@ namespace casting {
         std::vector<CoreRegion> undercutRegions = detectCoreRegions(result.cleanedMesh,
             result.demold.direction,
             settings.draftAngleDegrees);
+        std::vector<CoreRegion> classifiedRegions = classifyCoreRegions(result.cleanedMesh,
+            undercutRegions, result.demold.direction, settings);
         result.separability = evaluateSeparability(result.cleanedMesh, result.demold, undercutRegions,
             settings, &result.cores);
+        if (result.cores.empty()) {
+            result.cores = classifiedRegions;
+        } else {
+            std::unordered_map<std::size_t, CoreRegion> classifiedById;
+            for (const auto& core : classifiedRegions) {
+                classifiedById[core.id] = core;
+            }
+            for (auto& core : result.cores) {
+                auto found = classifiedById.find(core.id);
+                if (found != classifiedById.end()) {
+                    core = found->second;
+                }
+            }
+            std::unordered_set<std::size_t> knownIds;
+            for (const auto& core : result.cores) {
+                knownIds.insert(core.id);
+            }
+            for (const auto& core : classifiedRegions) {
+                if (core.generateCore && knownIds.count(core.id) == 0) {
+                    result.cores.push_back(core);
+                }
+            }
+        }
         Bounds meshBounds = computeBounds(result.cleanedMesh);
         std::vector<std::size_t> keptCoreIds;
         // Reduce sand-core candidates by volume ratio and count limits to minimize core count.
