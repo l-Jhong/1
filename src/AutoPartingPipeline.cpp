@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <utility>
 #include <unordered_map>
 #include <unordered_set>
@@ -1420,6 +1422,17 @@ namespace casting {
             }
         }
 
+        std::string formatThresholdValue(double value) {
+            std::ostringstream oss;
+            double rounded = std::round(value);
+            if (std::abs(value - rounded) < 1e-6) {
+                oss << static_cast<long long>(rounded);
+            } else {
+                oss << std::fixed << std::setprecision(1) << value;
+            }
+            return oss.str();
+        }
+
         NonCastDecision evaluateNonCastFeature(const CoreRegion& region,
             double width,
             double depth,
@@ -1439,11 +1452,11 @@ namespace casting {
             if (throughLike && depthWidth > kThroughHoleNoCastDepthWidthRatio) {
                 decision.castFeature = false;
                 decision.reason = "通孔长径比超过" +
-                    std::to_string(kThroughHoleNoCastDepthWidthRatio) + "，按不铸出处理。";
+                    formatThresholdValue(kThroughHoleNoCastDepthWidthRatio) + "，按不铸出处理。";
             } else if (blindLike && depthWidth > kBlindHoleNoCastDepthWidthRatio) {
                 decision.castFeature = false;
                 decision.reason = "盲孔深径比超过" +
-                    std::to_string(kBlindHoleNoCastDepthWidthRatio) + "，按不铸出处理。";
+                    formatThresholdValue(kBlindHoleNoCastDepthWidthRatio) + "，按不铸出处理。";
             } else if (isOpen && width < smallHoleThresholdByBatch(batch)) {
                 decision.castFeature = false;
                 decision.reason = "孔径低于当前生产批量的不铸出阈值。";
