@@ -52,7 +52,6 @@ using std::cerr;
 
 namespace {
 
-constexpr bool kRetainToolBody = true;
 NXOpen::Body* createExtrudedRectangularSolid(const casting::Bounds& bounds, int color, int layer = -1);
 
 NXOpen::Part* resolveWorkPart(BasePart* workPart) {
@@ -289,12 +288,42 @@ std::vector<NXOpen::Body*> extractInternalVolumes(NXOpen::Body* body) {
     return internalBodies;
 }
 
+std::vector<NXOpen::Body*> extractInternalCoresManually(NXOpen::Part* part, NXOpen::Body* intermediateBody) {
+    std::vector<NXOpen::Body*> internalCores;
+    if (!part || !intermediateBody) {
+        return internalCores;
+    }
+
+    // 中文提示：请用户在 NX 中手动选择封闭空腔的全部内表面。
+    NXOpen::UI* ui = NXOpen::UI::GetUI();
+    if (ui && ui->NXMessageBox()) {
+        ui->NXMessageBox()->Show(
+            "内部砂芯提取",
+            NXOpen::NXMessageBox::DialogTypeInformation,
+            "当前为框架实现：请后续接入面选择对话框与缝合成体流程。");
+    }
+
+    // TODO: 使用 SelectionManager / UF_UI_select_with_class_dialog 弹出面选择对话框，
+    //       将用户选中的 Face 收集为 faceTags。
+    // TODO: 对 faceTags 执行缝合（sew）或抽取为片体，再尝试加厚/封闭生成实体 Body。
+    // TODO: 将生成的内部砂芯实体加入 internalCores 返回。
+    (void)part;
+    (void)intermediateBody;
+    return internalCores;
+}
+
 std::vector<NXOpen::Body*> splitIntoConnectedBodies(NXOpen::Body* body) {
     std::vector<NXOpen::Body*> connectedBodies;
     if (!body) {
         return connectedBodies;
     }
-    // TODO: Implement connected-component splitting (UF_MODL / ExtractGeometry based split into multiple bodies).
+
+    // TODO: 连通域分离框架
+    // 1) 使用 UF_MODL_ask_body_faces 获取 body 的所有面。
+    // 2) 基于“共享边/共享顶点”构建面邻接图。
+    // 3) 对邻接图执行 BFS/DFS，得到多个连通分量。
+    // 4) 每个连通分量调用 NX/UF 的抽取几何接口生成独立 Body。
+    // 5) 返回所有独立 Body；若无法分离则返回原始 body。
     connectedBodies.push_back(body);
     return connectedBodies;
 }
@@ -505,13 +534,9 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
         return;
     }
     std::vector<tag_t> partSolidTags = collectSolidBodyTags(workPart);
-    std::vector<NXOpen::Body*> partToolBodies;
-    partToolBodies.reserve(partSolidTags.size());
-    for (tag_t bodyTag : partSolidTags) {
-        NXOpen::Body* body = dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(bodyTag));
-        if (body) {
-            partToolBodies.push_back(body);
-        }
+    NXOpen::Body* partBody = nullptr;
+    if (!partSolidTags.empty()) {
+        partBody = dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(partSolidTags.front()));
     }
 
     // Build a solid matching the bounds via "rectangular profile + extrusion"; return nullptr on failure.
@@ -533,71 +558,57 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
         return;
     }
 
-    // Subtract shrinkage-scaled cavity bounds from upper/lower blanks to get final mold geometry.
-    // Use NXOpen Boolean Builder consistently: target + tool + operation type (Subtract).
-#if DEBUG_ENVELOPE_SUBTRACTION
-    NXOpen::Body* partBody = partToolBodies.empty() ? nullptr : partToolBodies.front();
+    // 中文步骤1：基于 cavityBounds 扩展 20mm，构建提取包容盒。
+    NXOpen::Body* envelopeBody = nullptr;
+    NXOpen::Body* intermediateBody = nullptr;
+    if (!assembly.blocks.empty()) {
+        casting::Bounds envelopeBounds = assembly.blocks[0].cavityBounds;
+        constexpr double kEnvelopePadding = 20.0;
+        envelopeBounds.min.x -= kEnvelopePadding;
+        envelopeBounds.min.y -= kEnvelopePadding;
+        envelopeBounds.min.z -= kEnvelopePadding;
+        envelopeBounds.max.x += kEnvelopePadding;
+        envelopeBounds.max.y += kEnvelopePadding;
+        envelopeBounds.max.z += kEnvelopePadding;
+        envelopeBody = createExtrudedRectangularSolid(
+            envelopeBounds, casting::kCoreColor, casting::kSandCoreBaseLayer);
+    }
+
+    // 中文步骤2：执行 envelopeBody - partBody，得到 intermediateBody。
+    if (envelopeBody && partBody) {
+        if (applyBooleanFeature(part, envelopeBody, partBody,
+                                NXOpen::Features::Feature::BooleanTypeSubtract, true)) {
+            intermediateBody = envelopeBody;
+        }
+    }
+
+    // 中文步骤3：手动提取内部砂芯，并从 intermediateBody 中减去（保留砂芯工具体）。
     std::vector<NXOpen::Body*> internalCores;
     std::vector<NXOpen::Body*> externalCores;
-    if (partBody) {
-        casting::Vector3 pullDir = assembly.blocks.empty() ? casting::Vector3{0.0, 0.0, 1.0}
-                                                           : assembly.blocks.front().pullDirection;
-        if (std::abs(pullDir.x) < 1e-9 && std::abs(pullDir.y) < 1e-9 && std::abs(pullDir.z) < 1e-9) {
-            pullDir = {0.0, 0.0, 1.0};
-        }
-        casting::Bounds partBounds = askBodyBounds(partBody->Tag());
-        NXOpen::Body* extractionEnvelope = createExtractionEnvelope(partBounds, pullDir, 5.0);
-        NXOpen::Body* intermediateBody = nullptr;
-        if (extractionEnvelope &&
-            applyBooleanFeature(part, extractionEnvelope, partBody,
-                                NXOpen::Features::Feature::BooleanTypeSubtract, true)) {
-            intermediateBody = extractionEnvelope;
-        }
-
-        if (intermediateBody) {
-            std::vector<NXOpen::Body*> extractedInternal = extractInternalVolumes(intermediateBody);
-            std::vector<NXOpen::Body*> internalCoreCopies;
-            internalCoreCopies.reserve(extractedInternal.size());
-            for (NXOpen::Body* internalCore : extractedInternal) {
-                if (!internalCore) {
-                    continue;
-                }
-                casting::Bounds coreBounds = askBodyBounds(internalCore->Tag());
-                NXOpen::Body* coreCopy = createExtrudedRectangularSolid(
-                    coreBounds, casting::kCoreColor, casting::kSandCoreBaseLayer);
-                if (coreCopy) {
-                    internalCoreCopies.push_back(coreCopy);
-                }
+    if (intermediateBody) {
+        internalCores = extractInternalCoresManually(part, intermediateBody);
+        for (NXOpen::Body* coreBody : internalCores) {
+            if (!coreBody) {
+                continue;
             }
-            internalCores = internalCoreCopies;
+            UF_OBJ_set_color(coreBody->Tag(), casting::kCoreColor);
+            UF_OBJ_set_layer(coreBody->Tag(), casting::kSandCoreBaseLayer);
+            applyBooleanFeature(part, intermediateBody, coreBody,
+                                NXOpen::Features::Feature::BooleanTypeSubtract, true);
+        }
 
-            NXOpen::Body* externalVolume = intermediateBody;
-            for (NXOpen::Body* internalCore : extractedInternal) {
-                if (!externalVolume || !internalCore) {
-                    continue;
-                }
-                applyBooleanFeature(part, externalVolume, internalCore,
-                                    NXOpen::Features::Feature::BooleanTypeSubtract, false);
+        // 中文步骤4：剩余体按连通域分离，作为外部砂芯。
+        externalCores = splitIntoConnectedBodies(intermediateBody);
+        for (NXOpen::Body* coreBody : externalCores) {
+            if (!coreBody) {
+                continue;
             }
-            externalCores = splitIntoConnectedBodies(externalVolume);
+            UF_OBJ_set_color(coreBody->Tag(), casting::kCoreColor);
+            UF_OBJ_set_layer(coreBody->Tag(), casting::kSandCoreBaseLayer);
         }
     }
 
-    for (NXOpen::Body* coreBody : internalCores) {
-        if (!coreBody) {
-            continue;
-        }
-        UF_OBJ_set_color(coreBody->Tag(), casting::kCoreColor);
-        UF_OBJ_set_layer(coreBody->Tag(), casting::kSandCoreBaseLayer);
-    }
-    for (NXOpen::Body* coreBody : externalCores) {
-        if (!coreBody) {
-            continue;
-        }
-        UF_OBJ_set_color(coreBody->Tag(), casting::kCoreColor);
-        UF_OBJ_set_layer(coreBody->Tag(), casting::kSandCoreBaseLayer);
-    }
-
+    // 中文步骤5：先从上下模毛坯中减去内部/外部砂芯（保留砂芯工具体）。
     for (NXOpen::Body* moldBody : {upperBody, lowerBody}) {
         for (NXOpen::Body* internalCore : internalCores) {
             applyBooleanFeature(part, moldBody, internalCore,
@@ -607,48 +618,29 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
             applyBooleanFeature(part, moldBody, externalCore,
                                 NXOpen::Features::Feature::BooleanTypeSubtract, true);
         }
-        if (!partToolBodies.empty()) {
-            for (NXOpen::Body* toolBody : partToolBodies) {
-                applyBooleanFeature(part, moldBody, toolBody,
-                                    NXOpen::Features::Feature::BooleanTypeSubtract, false);
-            }
-        }
     }
-#else
-    if (!partToolBodies.empty()) {
-        if (assembly.blocks[0].subtractPart) {
-            for (NXOpen::Body* toolBody : partToolBodies) {
-                applyBooleanFeature(part, upperBody, toolBody,
-                                    NXOpen::Features::Feature::BooleanTypeSubtract, kRetainToolBody);
-            }
-        }
-        if (assembly.blocks[1].subtractPart) {
-            for (NXOpen::Body* toolBody : partToolBodies) {
-                applyBooleanFeature(part, lowerBody, toolBody,
-                                    NXOpen::Features::Feature::BooleanTypeSubtract, kRetainToolBody);
-            }
-        }
-    } else {
-        if (assembly.blocks[0].subtractPart) {
-            NXOpen::Body* upperCavity = createBlock(assembly.blocks[0].cavityBounds, 0);
-            if (upperCavity) {
-                applyBooleanFeature(part, upperBody, upperCavity,
-                                    NXOpen::Features::Feature::BooleanTypeSubtract, kRetainToolBody);
-            }
-        }
-        if (assembly.blocks[1].subtractPart) {
-            NXOpen::Body* lowerCavity = createBlock(assembly.blocks[1].cavityBounds, 0);
-            if (lowerCavity) {
-                applyBooleanFeature(part, lowerBody, lowerCavity,
-                                    NXOpen::Features::Feature::BooleanTypeSubtract, kRetainToolBody);
-            }
-        }
-    }
-#endif
 
-    for (const auto& core : assembly.cores) {
-        createBlock(core.bodyBounds, casting::kCoreColor);
-        createBlock(core.headBounds, casting::kCoreColor);
+    // 中文步骤6：最后执行 upperBody - partBody 与 lowerBody - partBody（不保留工具体）。
+    if (partBody) {
+        // 先保留一次工具体，确保同一零件体可用于两次减法；最后一次不保留。
+        applyBooleanFeature(part, upperBody, partBody,
+                            NXOpen::Features::Feature::BooleanTypeSubtract, true);
+        applyBooleanFeature(part, lowerBody, partBody,
+                            NXOpen::Features::Feature::BooleanTypeSubtract, false);
+    }
+
+    // 中文步骤7：清理临时体 envelopeBody / intermediateBody。
+    std::vector<tag_t> tempBodyTags;
+    if (envelopeBody) {
+        tempBodyTags.push_back(envelopeBody->Tag());
+    }
+    if (intermediateBody) {
+        tempBodyTags.push_back(intermediateBody->Tag());
+    }
+    std::sort(tempBodyTags.begin(), tempBodyTags.end());
+    tempBodyTags.erase(std::unique(tempBodyTags.begin(), tempBodyTags.end()), tempBodyTags.end());
+    for (tag_t bodyTag : tempBodyTags) {
+        UF_OBJ_delete_object(bodyTag);
     }
 }
 
