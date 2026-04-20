@@ -27,6 +27,7 @@ if(MSVC)
 endif()
 
 option(NXOPEN_ENABLED "Build NXOpen entry point" OFF)
+option(DEBUG_CORE_EXTRACTION "Enable debug-only extraction of internal volumes as sand cores from NXOpen Boolean results (bypasses detectCoreRegions; visualization only)" OFF)
 set(NXOPEN_ROOT_DIR "" CACHE PATH "NX installation root directory (contains UGOPEN)")
 set(NXOPEN_INCLUDE_DIR "" CACHE PATH "NXOpen include directory")
 set(NXOPEN_LIB_DIR "" CACHE PATH "NXOpen library directory")
@@ -73,6 +74,11 @@ if(NXOPEN_ENABLED)
             ${NXOPEN_UFUN_LIB}
             ${NXOPEN_NXOPEN_LIB}
     )
+    if(DEBUG_CORE_EXTRACTION)
+        target_compile_definitions(casting_auto_parting_nxopen PRIVATE DEBUG_CORE_EXTRACTION=1)
+    else()
+        target_compile_definitions(casting_auto_parting_nxopen PRIVATE DEBUG_CORE_EXTRACTION=0)
+    endif()
     set_target_properties(casting_auto_parting_nxopen PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
     if(WIN32)
         set_target_properties(casting_auto_parting_nxopen PROPERTIES

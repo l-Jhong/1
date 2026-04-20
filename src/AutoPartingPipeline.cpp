@@ -66,7 +66,6 @@ namespace casting {
         constexpr double kBatchProductionNoCastHoleDiameter = 15.0;
         constexpr double kSmallBatchNoCastHoleDiameter = 30.0;
         constexpr int kSandCoreColorVariants = 6;
-        constexpr int kSandCoreBaseLayer = 90;
         constexpr int kSandCoreLayerVariants = 10;
         constexpr std::size_t kVisualHashMultiplier = 2654435761U;
 

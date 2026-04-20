@@ -12,6 +12,8 @@ constexpr int kLowerMoldColor = 112;
 constexpr int kCoreColor = 10;
 constexpr int kCoreHeadColor = 25;
 constexpr int kNonCastFeatureColor = 33;
+// Base layer number for sand-core visualization in NXOpen.
+constexpr int kSandCoreBaseLayer = 90;
 
 struct DemoldEvaluation {
     Vector3 direction{};

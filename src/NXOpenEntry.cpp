@@ -46,7 +46,13 @@ using std::endl;
 using std::cout;
 using std::cerr;
 
+#ifndef DEBUG_CORE_EXTRACTION
+#error "DEBUG_CORE_EXTRACTION must be defined by build system flags."
+#endif
+
 namespace {
+
+constexpr bool kRetainToolBody = true;
 
 NXOpen::Part* resolveWorkPart(BasePart* workPart) {
     if (NXOpen::Part* part = dynamic_cast<NXOpen::Part*>(workPart)) {
@@ -211,6 +217,62 @@ bool applyBooleanFeature(NXOpen::Part* part,
         return false;
     }
 }
+
+#if DEBUG_CORE_EXTRACTION
+casting::Bounds askBodyBounds(tag_t bodyTag) {
+    double box[6]{};
+    casting::Bounds bounds{};
+    if (UF_MODL_ask_bounding_box(bodyTag, box) != 0) {
+        return bounds;
+    }
+    bounds.min = {box[0], box[1], box[2]};
+    bounds.max = {box[3], box[4], box[5]};
+    return bounds;
+}
+
+bool isBoundsInside(const casting::Bounds& inner, const casting::Bounds& outer, double tolerance) {
+    return inner.min.x >= outer.min.x - tolerance &&
+           inner.min.y >= outer.min.y - tolerance &&
+           inner.min.z >= outer.min.z - tolerance &&
+           inner.max.x <= outer.max.x + tolerance &&
+           inner.max.y <= outer.max.y + tolerance &&
+           inner.max.z <= outer.max.z + tolerance;
+}
+
+bool isBoundsOverlapping(const casting::Bounds& left, const casting::Bounds& right, double tolerance) {
+    return left.max.x >= right.min.x - tolerance && left.min.x <= right.max.x + tolerance &&
+           left.max.y >= right.min.y - tolerance && left.min.y <= right.max.y + tolerance &&
+           left.max.z >= right.min.z - tolerance && left.min.z <= right.max.z + tolerance;
+}
+
+std::vector<NXOpen::Body*> extractInternalVolumes(NXOpen::Body* moldBody) {
+    std::vector<NXOpen::Body*> internalBodies;
+    if (!moldBody) {
+        return internalBodies;
+    }
+
+    NXOpen::Part* part = dynamic_cast<NXOpen::Part*>(moldBody->OwningPart());
+    if (!part || !part->Bodies()) {
+        return internalBodies;
+    }
+
+    casting::Bounds moldBounds = askBodyBounds(moldBody->Tag());
+    constexpr double kBoundsContainmentTolerance = 1e-4;
+    for (NXOpen::Body* candidate : *part->Bodies()) {
+        if (!candidate || candidate == moldBody || !candidate->IsSolidBody()) {
+            continue;
+        }
+        casting::Bounds candidateBounds = askBodyBounds(candidate->Tag());
+        if (!isBoundsOverlapping(candidateBounds, moldBounds, kBoundsContainmentTolerance)) {
+            continue;
+        }
+        if (isBoundsInside(candidateBounds, moldBounds, kBoundsContainmentTolerance)) {
+            internalBodies.push_back(candidate);
+        }
+    }
+    return internalBodies;
+}
+#endif
 
 std::vector<tag_t> collectSolidBodyTags(BasePart* workPart) {
     std::vector<tag_t> tags;
@@ -452,13 +514,13 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
         if (assembly.blocks[0].subtractPart) {
             for (NXOpen::Body* toolBody : partToolBodies) {
                 applyBooleanFeature(part, upperBody, toolBody,
-                                    NXOpen::Features::Feature::BooleanTypeSubtract, true);
+                                    NXOpen::Features::Feature::BooleanTypeSubtract, kRetainToolBody);
             }
         }
         if (assembly.blocks[1].subtractPart) {
             for (NXOpen::Body* toolBody : partToolBodies) {
                 applyBooleanFeature(part, lowerBody, toolBody,
-                                    NXOpen::Features::Feature::BooleanTypeSubtract, true);
+                                    NXOpen::Features::Feature::BooleanTypeSubtract, kRetainToolBody);
             }
         }
     } else {
@@ -466,21 +528,37 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
             NXOpen::Body* upperCavity = createBlock(assembly.blocks[0].cavityBounds, 0);
             if (upperCavity) {
                 applyBooleanFeature(part, upperBody, upperCavity,
-                                    NXOpen::Features::Feature::BooleanTypeSubtract, false);
+                                    NXOpen::Features::Feature::BooleanTypeSubtract, kRetainToolBody);
             }
         }
         if (assembly.blocks[1].subtractPart) {
             NXOpen::Body* lowerCavity = createBlock(assembly.blocks[1].cavityBounds, 0);
             if (lowerCavity) {
                 applyBooleanFeature(part, lowerBody, lowerCavity,
-                                    NXOpen::Features::Feature::BooleanTypeSubtract, false);
+                                    NXOpen::Features::Feature::BooleanTypeSubtract, kRetainToolBody);
             }
         }
     }
 
+#if DEBUG_CORE_EXTRACTION
+    std::vector<NXOpen::Body*> debugSandCores = extractInternalVolumes(upperBody);
+    std::vector<NXOpen::Body*> lowerDebugSandCores = extractInternalVolumes(lowerBody);
+    debugSandCores.insert(debugSandCores.end(), lowerDebugSandCores.begin(), lowerDebugSandCores.end());
+    std::sort(debugSandCores.begin(), debugSandCores.end(),
+              [](NXOpen::Body* left, NXOpen::Body* right) {
+                  return left->Tag() < right->Tag();
+              });
+    debugSandCores.erase(std::unique(debugSandCores.begin(), debugSandCores.end()),
+                         debugSandCores.end());
+    for (NXOpen::Body* sandCoreBody : debugSandCores) {
+        UF_OBJ_set_color(sandCoreBody->Tag(), casting::kCoreColor);
+        UF_OBJ_set_layer(sandCoreBody->Tag(), casting::kSandCoreBaseLayer);
+    }
+#endif
+
     for (const auto& core : assembly.cores) {
         createBlock(core.bodyBounds, casting::kCoreColor);
-        createBlock(core.headBounds, casting::kCoreHeadColor);
+        createBlock(core.headBounds, casting::kCoreColor);
     }
 }
 
