@@ -34,9 +34,11 @@
 // Std C++ Includes
 #include <cstdio>
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <utility>
 
 using namespace NXOpen;
 using std::string;
@@ -259,6 +261,47 @@ NXOpen::Body* createExtractionEnvelope(const casting::Bounds& bounds,
     return createExtrudedRectangularSolid(expanded, casting::kCoreColor, casting::kSandCoreBaseLayer);
 }
 
+NXOpen::Body* cloneBody(NXOpen::Body* original) {
+    if (!original) {
+        return nullptr;
+    }
+    // TODO: 使用 NX 原生 copy body 特征做精确克隆。
+    // 当前框架实现：包围盒近似，保证流程可运行/可编译。
+    casting::Bounds b = askBodyBounds(original->Tag());
+    return createExtrudedRectangularSolid(b, 0, casting::kSandCoreBaseLayer);
+}
+
+NXOpen::Body* createExactContourExtrusion(const std::vector<casting::Vector3>& boundary,
+                                          const casting::Vector3& pullDir,
+                                          double minZ,
+                                          double maxZ) {
+    if (boundary.size() < 3) {
+        return nullptr;
+    }
+    // TODO: 基于 boundary 真正建闭合截面并沿 pullDir 精确拉伸。
+    // 当前框架实现：采用 boundary 包围盒 + 高度近似。
+    casting::Bounds b{};
+    b.min = boundary[0];
+    b.max = boundary[0];
+    for (const auto& p : boundary) {
+        b.min.x = std::min(b.min.x, p.x);
+        b.min.y = std::min(b.min.y, p.y);
+        b.min.z = std::min(b.min.z, p.z);
+        b.max.x = std::max(b.max.x, p.x);
+        b.max.y = std::max(b.max.y, p.y);
+        b.max.z = std::max(b.max.z, p.z);
+    }
+    if (std::abs(pullDir.z) >= std::abs(pullDir.x) && std::abs(pullDir.z) >= std::abs(pullDir.y)) {
+        b.min.z = minZ;
+        b.max.z = maxZ;
+    } else {
+        // TODO: 非 Z 轴方向时构建局部坐标并按 pullDir 拉伸。
+        b.min.z = std::min(b.min.z, minZ);
+        b.max.z = std::max(b.max.z, maxZ);
+    }
+    return createExtrudedRectangularSolid(b, 0, casting::kSandCoreBaseLayer);
+}
+
 std::vector<NXOpen::Body*> extractInternalVolumes(NXOpen::Body* body) {
     std::vector<NXOpen::Body*> internalBodies;
     if (!body) {
@@ -339,6 +382,19 @@ std::vector<NXOpen::Body*> splitIntoConnectedBodies(NXOpen::Body* body) {
     // 5) 返回所有独立 Body；若无法分离则返回原始 body。
     connectedBodies.push_back(body);
     return connectedBodies;
+}
+
+std::pair<NXOpen::Body*, NXOpen::Body*> splitBodyByPartingSurface(NXOpen::Body* body,
+                                                                  const casting::Vector3& origin,
+                                                                  const casting::Vector3& normal) {
+    if (!body) {
+        return {nullptr, nullptr};
+    }
+    // TODO: 调用真实分割 API（UF_MODL_split_body 等）返回上下体。
+    // 当前框架实现：不分割，全部归到上体。
+    (void)origin;
+    (void)normal;
+    return {body, nullptr};
 }
 
 std::vector<tag_t> collectSolidBodyTags(BasePart* workPart) {
@@ -577,16 +633,30 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
     }
 
 #ifdef DEBUG_ENVELOPE_SUBTRACTION
-    // 附加逻辑：包容盒减法提取砂芯（在原有模具减零件之前）。
-    NXOpen::Body* envelopeBody = nullptr;
+    // 附加逻辑：精确轮廓修剪砂芯提取（在原有模具减零件之前）。
+    NXOpen::Body* envelopeBodyA = nullptr;
     NXOpen::Body* intermediateBody = nullptr;
-    std::vector<NXOpen::Body*> internalCores;
-    std::vector<NXOpen::Body*> externalCores;
+    NXOpen::Body* contourBodyB = nullptr;
+    NXOpen::Body* excessBody = nullptr;
     NXOpen::Body* externalVolume = nullptr;
+    std::vector<NXOpen::Body*> allCores;
 
-    // 1) 计算零件全局包围盒（由两个 cavityBounds 合并）。
+    // 1) 分型面参数（origin + normal）。
+    casting::Vector3 partingOrigin{};
+    casting::Vector3 pullDir{0.0, 0.0, 1.0};
     if (assembly.blocks.size() >= 2) {
-        casting::Bounds partGlobalBounds = assembly.blocks[0].cavityBounds;
+        partingOrigin.x = (assembly.blocks[0].bounds.min.x + assembly.blocks[0].bounds.max.x +
+                           assembly.blocks[1].bounds.min.x + assembly.blocks[1].bounds.max.x) * 0.25;
+        partingOrigin.y = (assembly.blocks[0].bounds.min.y + assembly.blocks[0].bounds.max.y +
+                           assembly.blocks[1].bounds.min.y + assembly.blocks[1].bounds.max.y) * 0.25;
+        partingOrigin.z = (assembly.blocks[0].bounds.max.z + assembly.blocks[1].bounds.min.z) * 0.5;
+        pullDir = assembly.blocks[0].pullDirection;
+    }
+
+    // 2) partGlobalBounds = merge(cavityBounds[0], cavityBounds[1])。
+    casting::Bounds partGlobalBounds{};
+    if (assembly.blocks.size() >= 2) {
+        partGlobalBounds = assembly.blocks[0].cavityBounds;
         const casting::Bounds& cavity1 = assembly.blocks[1].cavityBounds;
         partGlobalBounds.min.x = std::min(partGlobalBounds.min.x, cavity1.min.x);
         partGlobalBounds.min.y = std::min(partGlobalBounds.min.y, cavity1.min.y);
@@ -595,7 +665,7 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
         partGlobalBounds.max.y = std::max(partGlobalBounds.max.y, cavity1.max.y);
         partGlobalBounds.max.z = std::max(partGlobalBounds.max.z, cavity1.max.z);
 
-        // 2) 基于 partGlobalBounds 外扩 20mm 生成包容盒。
+        // 3) 生成初始包容盒 A（当前框架先用外扩长方体）。
         casting::Bounds envelopeBounds = partGlobalBounds;
         constexpr double kEnvelopePadding = 20.0;
         envelopeBounds.min.x -= kEnvelopePadding;
@@ -604,30 +674,69 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
         envelopeBounds.max.x += kEnvelopePadding;
         envelopeBounds.max.y += kEnvelopePadding;
         envelopeBounds.max.z += kEnvelopePadding;
-        envelopeBody = createExtrudedRectangularSolid(
+        envelopeBodyA = createExtrudedRectangularSolid(
             envelopeBounds, 0, casting::kSandCoreBaseLayer);
     }
 
-    // 3) envelopeBody - partBody => intermediateBody（保留工具体）。
-    if (envelopeBody && partBody) {
-        if (applyBooleanFeature(part, envelopeBody, partBody,
+    // 4) intermediateBody = A - partBody（保留工具体）。
+    if (envelopeBodyA && partBody) {
+        if (applyBooleanFeature(part, envelopeBodyA, partBody,
                                 NXOpen::Features::Feature::BooleanTypeSubtract, true)) {
-            intermediateBody = envelopeBody;
+            intermediateBody = envelopeBodyA;
         }
     }
 
-    // 4) 手动辅助提取内部砂芯。
+    // 5) 生成 B，修剪 intermediate，并提取 excess。
     if (intermediateBody) {
-        internalCores = extractInternalCoresManually(part, intermediateBody);
-        for (NXOpen::Body* coreBody : internalCores) {
-            if (!coreBody) {
-                continue;
-            }
-            UF_OBJ_set_color(coreBody->Tag(), casting::kCoreColor);
-            UF_OBJ_set_layer(coreBody->Tag(), casting::kSandCoreBaseLayer);
+        auto dot3 = [](const casting::Vector3& a, const casting::Vector3& b) {
+            return a.x * b.x + a.y * b.y + a.z * b.z;
+        };
+        if (std::abs(pullDir.x) + std::abs(pullDir.y) + std::abs(pullDir.z) < 1e-9) {
+            pullDir = {0.0, 0.0, 1.0};
         }
 
-        // 5) intermediateBody - internalCores => externalVolume（不保留工具体）。
+        // TODO: 未来替换为零件真实顶点投影；当前用 partGlobalBounds 八角点投影近似 min/max。
+        std::vector<casting::Vector3> corners = {
+            {partGlobalBounds.min.x, partGlobalBounds.min.y, partGlobalBounds.min.z},
+            {partGlobalBounds.max.x, partGlobalBounds.min.y, partGlobalBounds.min.z},
+            {partGlobalBounds.max.x, partGlobalBounds.max.y, partGlobalBounds.min.z},
+            {partGlobalBounds.min.x, partGlobalBounds.max.y, partGlobalBounds.min.z},
+            {partGlobalBounds.min.x, partGlobalBounds.min.y, partGlobalBounds.max.z},
+            {partGlobalBounds.max.x, partGlobalBounds.min.y, partGlobalBounds.max.z},
+            {partGlobalBounds.max.x, partGlobalBounds.max.y, partGlobalBounds.max.z},
+            {partGlobalBounds.min.x, partGlobalBounds.max.y, partGlobalBounds.max.z}
+        };
+        double minProj = std::numeric_limits<double>::max();
+        double maxProj = -std::numeric_limits<double>::max();
+        for (const auto& c : corners) {
+            double v = dot3(c, pullDir);
+            minProj = std::min(minProj, v);
+            maxProj = std::max(maxProj, v);
+        }
+
+        // TODO: 此处应使用 result.maxContour.boundary；当前先用 partGlobalBounds 外轮廓近似。
+        std::vector<casting::Vector3> contourBoundary = {
+            {partGlobalBounds.min.x, partGlobalBounds.min.y, partGlobalBounds.min.z},
+            {partGlobalBounds.max.x, partGlobalBounds.min.y, partGlobalBounds.min.z},
+            {partGlobalBounds.max.x, partGlobalBounds.max.y, partGlobalBounds.min.z},
+            {partGlobalBounds.min.x, partGlobalBounds.max.y, partGlobalBounds.min.z},
+            {partGlobalBounds.min.x, partGlobalBounds.min.y, partGlobalBounds.min.z}
+        };
+        contourBodyB = createExactContourExtrusion(contourBoundary, pullDir, minProj, maxProj);
+
+        excessBody = cloneBody(intermediateBody);
+
+        if (contourBodyB) {
+            applyBooleanFeature(part, intermediateBody, contourBodyB,
+                                NXOpen::Features::Feature::BooleanTypeIntersect, true);
+        }
+        if (excessBody && intermediateBody) {
+            applyBooleanFeature(part, excessBody, intermediateBody,
+                                NXOpen::Features::Feature::BooleanTypeSubtract, false);
+        }
+
+        // 6) 提取内部砂芯 + 外部砂芯。
+        std::vector<NXOpen::Body*> internalCores = extractInternalVolumes(intermediateBody);
         externalVolume = intermediateBody;
         for (NXOpen::Body* coreBody : internalCores) {
             if (!coreBody || !externalVolume) {
@@ -636,27 +745,45 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly) {
             applyBooleanFeature(part, externalVolume, coreBody,
                                 NXOpen::Features::Feature::BooleanTypeSubtract, false);
         }
+        std::vector<NXOpen::Body*> externalCores = splitIntoConnectedBodies(externalVolume);
+        allCores.insert(allCores.end(), internalCores.begin(), internalCores.end());
+        allCores.insert(allCores.end(), externalCores.begin(), externalCores.end());
 
-        // 6) externalVolume 按连通域分离为外部砂芯（框架：split 可暂时返回空列表）。
-        externalCores = splitIntoConnectedBodies(externalVolume);
-        for (NXOpen::Body* coreBody : externalCores) {
+        // 7) excessBody 分割后并回上下模。
+        auto excessSplit = splitBodyByPartingSurface(excessBody, partingOrigin, pullDir);
+        if (excessSplit.first) {
+            applyBooleanFeature(part, upperBody, excessSplit.first,
+                                NXOpen::Features::Feature::BooleanTypeUnite, false);
+        }
+        if (excessSplit.second) {
+            applyBooleanFeature(part, lowerBody, excessSplit.second,
+                                NXOpen::Features::Feature::BooleanTypeUnite, false);
+        }
+
+        // 8) 砂芯按分型面分割并分别从上下模扣除（保留砂芯工具体）。
+        for (NXOpen::Body* coreBody : allCores) {
             if (!coreBody) {
                 continue;
             }
             UF_OBJ_set_color(coreBody->Tag(), casting::kCoreColor);
             UF_OBJ_set_layer(coreBody->Tag(), casting::kSandCoreBaseLayer);
+            auto splitCore = splitBodyByPartingSurface(coreBody, partingOrigin, pullDir);
+            if (splitCore.first) {
+                applyBooleanFeature(part, upperBody, splitCore.first,
+                                    NXOpen::Features::Feature::BooleanTypeSubtract, true);
+            }
+            if (splitCore.second) {
+                applyBooleanFeature(part, lowerBody, splitCore.second,
+                                    NXOpen::Features::Feature::BooleanTypeSubtract, true);
+            }
         }
-    }
 
-    // 7) 将内外砂芯分别从上下模中扣除（保留砂芯工具体）。
-    for (NXOpen::Body* moldBody : {upperBody, lowerBody}) {
-        for (NXOpen::Body* internalCore : internalCores) {
-            applyBooleanFeature(part, moldBody, internalCore,
-                                NXOpen::Features::Feature::BooleanTypeSubtract, true);
+        // 9) 删除临时体。
+        if (contourBodyB) {
+            UF_OBJ_delete_object(contourBodyB->Tag());
         }
-        for (NXOpen::Body* externalCore : externalCores) {
-            applyBooleanFeature(part, moldBody, externalCore,
-                                NXOpen::Features::Feature::BooleanTypeSubtract, true);
+        if (excessBody) {
+            UF_OBJ_delete_object(excessBody->Tag());
         }
     }
 #endif
