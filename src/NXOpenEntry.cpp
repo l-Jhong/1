@@ -50,6 +50,7 @@ using std::cout;
 using std::cerr;
 
 #define DEBUG_ENVELOPE_SUBTRACTION
+#define USE_SIMPLE_ENVELOPE_SUBTRACTION
 
 namespace {
 
@@ -427,44 +428,90 @@ std::pair<NXOpen::Body*, NXOpen::Body*> splitBodyByPartingSurface(NXOpen::Body* 
         return {nullptr, nullptr};
     }
 
+    // Retrieve the active work part for boolean operations.
+    NXOpen::Session* session = NXOpen::Session::GetSession();
+    NXOpen::Part* part = session
+        ? dynamic_cast<NXOpen::Part*>(session->Parts()->Work())
+        : nullptr;
+    if (!part) {
+        return {body, nullptr};
+    }
+
     // Normalize the plane normal.
     double mag = std::sqrt(planeNormal.x * planeNormal.x +
                            planeNormal.y * planeNormal.y +
                            planeNormal.z * planeNormal.z);
-    double normal[3] = {0.0, 0.0, 1.0};
+    double nx = 0.0, ny = 0.0, nz = 1.0;
     if (mag > 1e-9) {
-        normal[0] = planeNormal.x / mag;
-        normal[1] = planeNormal.y / mag;
-        normal[2] = planeNormal.z / mag;
-    }
-    double origin[3] = {planeOrigin.x, planeOrigin.y, planeOrigin.z};
-
-    // Clone the body so we can trim the original for the upper half
-    // and the clone for the lower half.
-    NXOpen::Body* lowerBody = cloneBody(body);
-
-    tag_t planTag = NULL_TAG;
-    if (UF_MODL_create_plane(origin, normal, &planTag) != 0 || planTag == NULL_TAG) {
-        // Fallback: cannot create plane, route whole body to upper side.
-        return {body, lowerBody};
+        nx = planeNormal.x / mag;
+        ny = planeNormal.y / mag;
+        nz = planeNormal.z / mag;
     }
 
-    // Trim original body: keep the positive-normal side (upper mold).
-    tag_t trimmedUpper = NULL_TAG;
-    UF_MODL_trim_body(body->Tag(), planTag, 1, &trimmedUpper);
+    // Compute half-extent large enough to cover the body plus margin.
+    casting::Bounds bodyBounds = askBodyBounds(body->Tag());
+    double diag = std::sqrt(
+        std::pow(bodyBounds.max.x - bodyBounds.min.x, 2.0) +
+        std::pow(bodyBounds.max.y - bodyBounds.min.y, 2.0) +
+        std::pow(bodyBounds.max.z - bodyBounds.min.z, 2.0));
+    double halfExtent = std::max(diag * 2.0, 1000.0);
 
-    // Trim cloned body: keep the negative-normal side (lower mold).
-    tag_t trimmedLower = NULL_TAG;
-    if (lowerBody) {
-        UF_MODL_trim_body(lowerBody->Tag(), planTag, 0, &trimmedLower);
+    // Upper half-space box: centre displaced from planeOrigin along +normal.
+    casting::Bounds upperBounds;
+    upperBounds.min = {planeOrigin.x + nx * halfExtent - halfExtent,
+                       planeOrigin.y + ny * halfExtent - halfExtent,
+                       planeOrigin.z + nz * halfExtent - halfExtent};
+    upperBounds.max = {planeOrigin.x + nx * halfExtent + halfExtent,
+                       planeOrigin.y + ny * halfExtent + halfExtent,
+                       planeOrigin.z + nz * halfExtent + halfExtent};
+
+    // Lower half-space box: centre displaced from planeOrigin along -normal.
+    casting::Bounds lowerBounds;
+    lowerBounds.min = {planeOrigin.x - nx * halfExtent - halfExtent,
+                       planeOrigin.y - ny * halfExtent - halfExtent,
+                       planeOrigin.z - nz * halfExtent - halfExtent};
+    lowerBounds.max = {planeOrigin.x - nx * halfExtent + halfExtent,
+                       planeOrigin.y - ny * halfExtent + halfExtent,
+                       planeOrigin.z - nz * halfExtent + halfExtent};
+
+    NXOpen::Body* upperBox = createExtrudedRectangularSolid(upperBounds, 0);
+    NXOpen::Body* lowerBox = createExtrudedRectangularSolid(lowerBounds, 0);
+
+    // Clone the original body twice so we can intersect each clone with its
+    // respective half-space box (do NOT use UF_MODL_split_body).
+    NXOpen::Body* upperClone = cloneBody(body);
+    NXOpen::Body* lowerClone = cloneBody(body);
+
+    NXOpen::Body* upperResult = nullptr;
+    NXOpen::Body* lowerResult = nullptr;
+
+    // Intersect upper clone with upper-side box (tool consumed, retainTool=false).
+    if (upperClone && upperBox) {
+        if (applyBooleanFeature(part, upperClone, upperBox,
+                                NXOpen::Features::Feature::BooleanTypeIntersect, false)) {
+            upperResult = upperClone;
+        } else {
+            UF_OBJ_delete_object(upperClone->Tag());
+            UF_OBJ_delete_object(upperBox->Tag());
+        }
+    } else {
+        if (upperClone) { UF_OBJ_delete_object(upperClone->Tag()); }
+        if (upperBox)   { UF_OBJ_delete_object(upperBox->Tag());   }
     }
 
-    UF_OBJ_delete_object(planTag);
-
-    NXOpen::Body* upperResult = (trimmedUpper != NULL_TAG)
-        ? dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(trimmedUpper)) : body;
-    NXOpen::Body* lowerResult = (trimmedLower != NULL_TAG && lowerBody)
-        ? dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(trimmedLower)) : lowerBody;
+    // Intersect lower clone with lower-side box.
+    if (lowerClone && lowerBox) {
+        if (applyBooleanFeature(part, lowerClone, lowerBox,
+                                NXOpen::Features::Feature::BooleanTypeIntersect, false)) {
+            lowerResult = lowerClone;
+        } else {
+            UF_OBJ_delete_object(lowerClone->Tag());
+            UF_OBJ_delete_object(lowerBox->Tag());
+        }
+    } else {
+        if (lowerClone) { UF_OBJ_delete_object(lowerClone->Tag()); }
+        if (lowerBox)   { UF_OBJ_delete_object(lowerBox->Tag());   }
+    }
 
     return {upperResult, lowerResult};
 }
@@ -569,6 +616,12 @@ NXOpen::Body* createExtrudedRectangularSolid(const casting::Bounds& bounds, int 
         UF_OBJ_set_layer(bodyTag, layer);
     }
     return dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(bodyTag));
+}
+
+// Convenience wrapper around createExtrudedRectangularSolid for callers that
+// only need to supply bounds and optionally a display color.
+NXOpen::Body* createBox(const casting::Bounds& bounds, int color = 0) {
+    return createExtrudedRectangularSolid(bounds, color);
 }
 
 }  // namespace
@@ -688,6 +741,148 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
         }
     }
     NXOpen::Body* partBody = partToolBodies.empty() ? nullptr : partToolBodies[0];
+
+#ifdef USE_SIMPLE_ENVELOPE_SUBTRACTION
+    // -----------------------------------------------------------------------
+    // Simplified sand-core extraction: envelope-subtraction workflow
+    // -----------------------------------------------------------------------
+
+    // 1) Compute precise part bounding box from mesh vertices (no expansion).
+    casting::Bounds partBounds{};
+    if (!mesh.vertices.empty()) {
+        partBounds.min = partBounds.max = mesh.vertices[0];
+        for (const auto& v : mesh.vertices) {
+            partBounds.min.x = std::min(partBounds.min.x, v.x);
+            partBounds.min.y = std::min(partBounds.min.y, v.y);
+            partBounds.min.z = std::min(partBounds.min.z, v.z);
+            partBounds.max.x = std::max(partBounds.max.x, v.x);
+            partBounds.max.y = std::max(partBounds.max.y, v.y);
+            partBounds.max.z = std::max(partBounds.max.z, v.z);
+        }
+    }
+
+    // 2) Generate precise envelope B from partBounds (no padding).
+    NXOpen::Body* bodyB = createBox(partBounds);
+
+    // 3) C = B - partBody (keep tool so partBody is preserved for later use).
+    NXOpen::Body* bodyC = nullptr;
+    if (bodyB && partBody) {
+        if (applyBooleanFeature(part, bodyB, partBody,
+                                NXOpen::Features::Feature::BooleanTypeSubtract, true)) {
+            bodyC = bodyB;
+        }
+    }
+
+    // 4) Extract internal cores (closed cavities) from C.
+    std::vector<NXOpen::Body*> internalCores;
+    if (bodyC) {
+        internalCores = extractInternalVolumes(bodyC);
+    }
+
+    // 5) Subtract internal cores from C, then split remaining C into external cores.
+    std::vector<NXOpen::Body*> externalCores;
+    if (bodyC) {
+        for (NXOpen::Body* coreBody : internalCores) {
+            if (coreBody) {
+                applyBooleanFeature(part, bodyC, coreBody,
+                                    NXOpen::Features::Feature::BooleanTypeSubtract, false);
+            }
+        }
+        externalCores = splitIntoConnectedBodies(bodyC);
+    }
+
+    // 6) Generate mold blank A: merge bounds of blocks[0] and blocks[1].
+    NXOpen::Body* bodyA = nullptr;
+    if (assembly.blocks.size() >= 2) {
+        casting::Bounds mergedBounds = assembly.blocks[0].bounds;
+        const casting::Bounds& blk1 = assembly.blocks[1].bounds;
+        mergedBounds.min.x = std::min(mergedBounds.min.x, blk1.min.x);
+        mergedBounds.min.y = std::min(mergedBounds.min.y, blk1.min.y);
+        mergedBounds.min.z = std::min(mergedBounds.min.z, blk1.min.z);
+        mergedBounds.max.x = std::max(mergedBounds.max.x, blk1.max.x);
+        mergedBounds.max.y = std::max(mergedBounds.max.y, blk1.max.y);
+        mergedBounds.max.z = std::max(mergedBounds.max.z, blk1.max.z);
+        bodyA = createBox(mergedBounds);
+    }
+    if (!bodyA) {
+        return;
+    }
+
+    // 7) A minus all internal and external cores (keep tool bodies for later use).
+    for (NXOpen::Body* coreBody : internalCores) {
+        if (coreBody) {
+            applyBooleanFeature(part, bodyA, coreBody,
+                                NXOpen::Features::Feature::BooleanTypeSubtract, true);
+        }
+    }
+    for (NXOpen::Body* coreBody : externalCores) {
+        if (coreBody) {
+            applyBooleanFeature(part, bodyA, coreBody,
+                                NXOpen::Features::Feature::BooleanTypeSubtract, true);
+        }
+    }
+
+    // 8) A minus partBody (do not retain tool).
+    if (partBody) {
+        applyBooleanFeature(part, bodyA, partBody,
+                            NXOpen::Features::Feature::BooleanTypeSubtract, false);
+    }
+
+    // 9) Parting surface info: origin = maxContour.centroid, normal = blocks[0].pullDirection.
+    casting::Vector3 partingOrigin = maxContour.centroid;
+    casting::Vector3 partingNormal = {0.0, 0.0, 1.0};
+    if (!assembly.blocks.empty()) {
+        partingNormal = assembly.blocks[0].pullDirection;
+        if (std::abs(partingNormal.x) + std::abs(partingNormal.y) + std::abs(partingNormal.z) < 1e-9) {
+            partingNormal = {0.0, 0.0, 1.0};
+        }
+    }
+
+    // 10) Split A into upper and lower mold bodies.
+    auto moldSplit = splitBodyByPartingSurface(bodyA, partingOrigin, partingNormal);
+    NXOpen::Body* upperBody = moldSplit.first;
+    NXOpen::Body* lowerBody = moldSplit.second;
+    if (upperBody) {
+        UF_OBJ_set_color(upperBody->Tag(), casting::kUpperMoldColor);
+    }
+    if (lowerBody) {
+        UF_OBJ_set_color(lowerBody->Tag(), casting::kLowerMoldColor);
+    }
+
+    // 11) Split each core by parting surface; set color and layer on both halves.
+    auto splitAndColorCore = [&](NXOpen::Body* coreBody) {
+        if (!coreBody) {
+            return;
+        }
+        auto coreSplit = splitBodyByPartingSurface(coreBody, partingOrigin, partingNormal);
+        if (coreSplit.first) {
+            UF_OBJ_set_color(coreSplit.first->Tag(), casting::kCoreColor);
+            UF_OBJ_set_layer(coreSplit.first->Tag(), casting::kSandCoreBaseLayer);
+        }
+        if (coreSplit.second) {
+            UF_OBJ_set_color(coreSplit.second->Tag(), casting::kCoreColor);
+            UF_OBJ_set_layer(coreSplit.second->Tag(), casting::kSandCoreBaseLayer);
+        }
+    };
+    for (NXOpen::Body* coreBody : internalCores) {
+        splitAndColorCore(coreBody);
+    }
+    for (NXOpen::Body* coreBody : externalCores) {
+        splitAndColorCore(coreBody);
+    }
+
+    // 12) Delete intermediate bodies B and C (optional cleanup).
+    if (bodyC) {
+        UF_OBJ_delete_object(bodyC->Tag());
+    } else if (bodyB) {
+        UF_OBJ_delete_object(bodyB->Tag());
+    }
+
+#else
+    // -----------------------------------------------------------------------
+    // Legacy path (kept as fallback when USE_SIMPLE_ENVELOPE_SUBTRACTION is
+    // not defined).
+    // -----------------------------------------------------------------------
 
     // Build a solid matching the bounds via "rectangular profile + extrusion"; return nullptr on failure.
     auto createBlock = [](const casting::Bounds& bounds, int color) -> NXOpen::Body* {
@@ -846,7 +1041,9 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
         applyBooleanFeature(part, lowerBody, partBody,
                             NXOpen::Features::Feature::BooleanTypeSubtract, false);
     }
-#endif
+#endif  // DEBUG_ENVELOPE_SUBTRACTION
+
+#endif  // USE_SIMPLE_ENVELOPE_SUBTRACTION
 }
 
 void MyClass::showSandCoreRecursive(const casting::SandCore& sandCore) {
