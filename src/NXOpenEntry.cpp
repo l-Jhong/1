@@ -872,9 +872,13 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
     }
 
     // 12) Delete intermediate bodies B and C (optional cleanup).
+    // Note: bodyC == bodyB when the boolean subtraction succeeded (B is modified
+    // in-place and then aliased as C).  Deleting via bodyC is therefore sufficient
+    // to release the underlying NX body in both cases.
     if (bodyC) {
         UF_OBJ_delete_object(bodyC->Tag());
     } else if (bodyB) {
+        // Boolean failed; bodyB was never aliased, so delete it separately.
         UF_OBJ_delete_object(bodyB->Tag());
     }
 
