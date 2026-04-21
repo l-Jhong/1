@@ -2,7 +2,6 @@
 
 // Mandatory UF Includes
 #include <uf.h>
-#include <uf_copy.h>
 #include <uf_curve.h>
 #include <uf_object_types.h>
 #include <uf_modl.h>
@@ -281,18 +280,54 @@ NXOpen::Body* cloneBody(NXOpen::Body* original) {
     if (!original) {
         return nullptr;
     }
-    double xform[4][4] = {
-        {1.0, 0.0, 0.0, 0.0},
-        {0.0, 1.0, 0.0, 0.0},
-        {0.0, 0.0, 1.0, 0.0},
-        {0.0, 0.0, 0.0, 1.0}
-    };
-    tag_t srcTag = original->Tag();
-    tag_t newTag = NULL_TAG;
-    if (UF_COPY_objects(1, &srcTag, xform, &newTag) != 0 || newTag == NULL_TAG) {
+
+    // Get the bounding box of the original body.
+    double box[6]{};
+    if (UF_MODL_ask_bounding_box(original->Tag(), box) != 0) {
         return nullptr;
     }
-    return dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(newTag));
+
+    // Build a box that fully encloses the original (with padding to avoid
+    // tangency issues at the boundary during the boolean operation).
+    const double kPad = 1.0;
+    casting::Bounds bounds;
+    bounds.min = {box[0] - kPad, box[1] - kPad, box[2] - kPad};
+    bounds.max = {box[3] + kPad, box[4] + kPad, box[5] + kPad};
+    NXOpen::Body* boxBody = createExtrudedRectangularSolid(bounds, 0);
+    if (!boxBody) {
+        return nullptr;
+    }
+
+    // Boolean Intersect: boxBody (target) ∩ original (tool, retained).
+    // Because the box fully contains the original, the result equals the
+    // original's shape, giving us an independent copy while the original
+    // body is preserved intact (retainTool = true).
+    NXOpen::Session* session = NXOpen::Session::GetSession();
+    NXOpen::Part* part = session
+        ? dynamic_cast<NXOpen::Part*>(session->Parts()->Work())
+        : nullptr;
+    if (!part) {
+        return nullptr;
+    }
+
+    NXOpen::Features::BooleanBuilder* builder = nullptr;
+    try {
+        builder = part->Features()->CreateBooleanBuilder(nullptr);
+        builder->SetOperation(NXOpen::Features::Feature::BooleanTypeIntersect);
+        builder->SetTarget(boxBody);
+        builder->SetTool(original);
+        builder->SetRetainTarget(false);
+        builder->SetRetainTool(true);
+        builder->CommitFeature();
+        builder->Destroy();
+    } catch (...) {
+        if (builder) {
+            builder->Destroy();
+        }
+        return nullptr;
+    }
+
+    return boxBody;
 }
 
 NXOpen::Body* createExactContourExtrusion(const std::vector<casting::Vector3>& boundary,
