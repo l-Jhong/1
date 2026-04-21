@@ -1,0 +1,27 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "casting_auto_parting_demo", "casting_auto_parting_demo.vcxproj", "{4E5A9B1C-3A1E-4C4D-9F3D-2BA9D4C1F001}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "casting_auto_parting_nxopen", "casting_auto_parting_nxopen.vcxproj", "{D3B7A7F2-8A4D-4A78-BD22-9CF178C8A002}"
+EndProject
+Global
+GlobalSection(SolutionConfigurationPlatforms) = preSolution
+Debug|x64 = Debug|x64
+Release|x64 = Release|x64
+EndGlobalSection
+GlobalSection(ProjectConfigurationPlatforms) = postSolution
+{4E5A9B1C-3A1E-4C4D-9F3D-2BA9D4C1F001}.Debug|x64.ActiveCfg = Debug|x64
+{4E5A9B1C-3A1E-4C4D-9F3D-2BA9D4C1F001}.Debug|x64.Build.0 = Debug|x64
+{4E5A9B1C-3A1E-4C4D-9F3D-2BA9D4C1F001}.Release|x64.ActiveCfg = Release|x64
+{4E5A9B1C-3A1E-4C4D-9F3D-2BA9D4C1F001}.Release|x64.Build.0 = Release|x64
+{D3B7A7F2-8A4D-4A78-BD22-9CF178C8A002}.Debug|x64.ActiveCfg = Debug|x64
+{D3B7A7F2-8A4D-4A78-BD22-9CF178C8A002}.Debug|x64.Build.0 = Debug|x64
+{D3B7A7F2-8A4D-4A78-BD22-9CF178C8A002}.Release|x64.ActiveCfg = Release|x64
+{D3B7A7F2-8A4D-4A78-BD22-9CF178C8A002}.Release|x64.Build.0 = Release|x64
+EndGlobalSection
+GlobalSection(SolutionProperties) = preSolution
+HideSolutionNode = FALSE
+EndGlobalSection
+EndGlobal
