@@ -30,7 +30,6 @@
 #include <NXOpen/Session.hxx>
 #include <NXOpen/Features_BooleanBuilder.hxx>
 #include <NXOpen/Features_FeatureCollection.hxx>
-#include <NXOpen/Features_TransformBuilder.hxx>
 
 // Std C++ Includes
 #include <cstdio>
@@ -38,7 +37,6 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
-#include <set>
 #include <sstream>
 #include <utility>
 
@@ -283,43 +281,17 @@ NXOpen::Body* cloneBody(NXOpen::Body* original) {
     if (!original) {
         return nullptr;
     }
-    NXOpen::Session* session = NXOpen::Session::GetSession();
-    NXOpen::Part* part = session
-        ? dynamic_cast<NXOpen::Part*>(session->Parts()->Work())
-        : nullptr;
-    if (!part) {
+    double xform[4][4] = {
+        {1.0, 0.0, 0.0, 0.0},
+        {0.0, 1.0, 0.0, 0.0},
+        {0.0, 0.0, 1.0, 0.0},
+        {0.0, 0.0, 0.0, 1.0}
+    };
+    tag_t newTag = NULL_TAG;
+    if (UF_MODL_copy_body(original->Tag(), xform, &newTag) != 0 || newTag == NULL_TAG) {
         return nullptr;
     }
-
-    // Snapshot existing body tags so we can identify the newly cloned body.
-    std::set<tag_t> preTags;
-    for (NXOpen::Body* b : *part->Bodies()) {
-        preTags.insert(b->Tag());
-    }
-
-    NXOpen::Features::TransformBuilder* builder = nullptr;
-    try {
-        builder = part->Features()->CreateTransformBuilder(nullptr);
-        builder->ObjectToTransform()->Add(original);
-        builder->SetMovementMethod(
-            NXOpen::Features::TransformBuilder::MovementMethodDelta);
-        builder->SetOperationOption(
-            NXOpen::Features::TransformBuilder::OperationOptionCopy);
-        builder->CommitFeature();
-        builder->Destroy();
-        builder = nullptr;
-    } catch (...) {
-        if (builder) { builder->Destroy(); }
-        return nullptr;
-    }
-
-    // Return the first body that appeared after the clone operation.
-    for (NXOpen::Body* b : *part->Bodies()) {
-        if (preTags.find(b->Tag()) == preTags.end()) {
-            return b;
-        }
-    }
-    return nullptr;
+    return dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(newTag));
 }
 
 NXOpen::Body* createExactContourExtrusion(const std::vector<casting::Vector3>& boundary,
