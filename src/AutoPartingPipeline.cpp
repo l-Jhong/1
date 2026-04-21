@@ -2384,6 +2384,21 @@ namespace casting {
         }
 
         result.split = splitMesh(result.cleanedMesh, result.demold.direction);
+
+#if 0
+        // Sand-core detection pipeline disabled by design in run():
+        // keep only parting-surface and mold-assembly computation.
+        std::vector<CoreRegion> detectedCoreRegions =
+            detectCoreRegions(result.cleanedMesh, result.demold.direction, settings.minCoreVolume);
+        std::vector<CoreRegion> classifiedCoreRegions =
+            classifyCoreRegions(result.cleanedMesh, detectedCoreRegions, result.demold.direction, settings);
+        std::vector<std::size_t> keptCoreRegionIds;
+        std::vector<CoreRegion> filteredCoreRegions =
+            filterCoreRegions(classifiedCoreRegions, computeBounds(result.cleanedMesh), settings, &keptCoreRegionIds);
+        result.sandCores =
+            generateSandCores(result.cleanedMesh, result.demold.direction, filteredCoreRegions, settings);
+#endif
+
         result.cores.clear();
         result.sandCores.clear();
 
@@ -2416,8 +2431,9 @@ namespace casting {
             result.split = splitMesh(result.cleanedMesh, result.demold.direction);
         }
 
+        const std::vector<SandCore> emptySandCores;
         result.moldAssembly = buildMoldAssembly(result.cleanedMesh, result.partingSurface,
-            result.demold.direction, settings, result.sandCores, result.cores);
+            result.demold.direction, settings, emptySandCores, result.cores);
         result.strategies = buildStrategyOptions(result.separability, result.cores.size());
         std::vector<InterferenceIssue> interferenceIssues = checkInterference(result.cleanedMesh,
             result.split, result.partingLine, result.partingSurface, result.demold, result.moldAssembly);
