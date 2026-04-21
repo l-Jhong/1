@@ -2,6 +2,7 @@
 
 // Mandatory UF Includes
 #include <uf.h>
+#include <uf_copy.h>
 #include <uf_curve.h>
 #include <uf_object_types.h>
 #include <uf_modl.h>
@@ -286,8 +287,9 @@ NXOpen::Body* cloneBody(NXOpen::Body* original) {
         {0.0, 0.0, 1.0, 0.0},
         {0.0, 0.0, 0.0, 1.0}
     };
+    tag_t srcTag = original->Tag();
     tag_t newTag = NULL_TAG;
-    if (UF_OBJ_copy_object(original->Tag(), xform, &newTag) != 0 || newTag == NULL_TAG) {
+    if (UF_COPY_objects(1, &srcTag, xform, &newTag) != 0 || newTag == NULL_TAG) {
         return nullptr;
     }
     return dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(newTag));
@@ -707,12 +709,6 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
     }
 
 #ifdef DEBUG_ENVELOPE_SUBTRACTION
-    // Additive debug flow: precise-contour-trim core extraction before baseline mold subtraction.
-    NXOpen::Body* intermediateBody = nullptr;
-    NXOpen::Body* contourBodyB = nullptr;
-    NXOpen::Body* excessBody = nullptr;
-    std::vector<NXOpen::Body*> allCores;
-
     // 1) Pull direction and parting-plane origin from maxContour.
     casting::Vector3 pullDir{0.0, 0.0, 1.0};
     casting::Vector3 partingOrigin = maxContour.centroid;
@@ -728,7 +724,7 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
     double maxZ = 0.0;
     computeZRangeAlongDirection(mesh, pullDir, minZ, maxZ);
 
-    // 3) Compute mesh vertex bounding box for envelope A.
+    // 3) Compute mesh vertex bounding box and build envelope A (expanded 20 mm in XY).
     NXOpen::Body* envelopeBodyA = nullptr;
     if (!mesh.vertices.empty()) {
         casting::Bounds meshBounds{};
@@ -742,8 +738,6 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
             meshBounds.max.y = std::max(meshBounds.max.y, v.y);
             meshBounds.max.z = std::max(meshBounds.max.z, v.z);
         }
-
-        // 4) Build initial envelope A: expand XY by 20 mm, set Z to [minZ-0.5, maxZ+0.5].
         constexpr double kEnvelopePadding = 20.0;
         casting::Bounds envelopeBounds = meshBounds;
         envelopeBounds.min.x -= kEnvelopePadding;
@@ -752,47 +746,62 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
         envelopeBounds.max.y += kEnvelopePadding;
         envelopeBounds.min.z = minZ - 0.5;
         envelopeBounds.max.z = maxZ + 0.5;
-        envelopeBodyA = createExtrudedRectangularSolid(
-            envelopeBounds, 0, casting::kSandCoreBaseLayer);
+        envelopeBodyA = createExtrudedRectangularSolid(envelopeBounds, 0, casting::kSandCoreBaseLayer);
     }
 
-    // 5) intermediateBody = A - partBody (retain tool body).
-    if (envelopeBodyA && partBody) {
-        if (applyBooleanFeature(part, envelopeBodyA, partBody,
+    // 4) Create two identical precise contour extrusions B1 and B2 from maxContour.boundary.
+    NXOpen::Body* contourB1 = createExactContourExtrusion(maxContour.boundary, pullDir, minZ, maxZ);
+    NXOpen::Body* contourB2 = createExactContourExtrusion(maxContour.boundary, pullDir, minZ, maxZ);
+
+    // 5) A - B1 (not retain tool) → A becomes the excess part (returned to mold).
+    NXOpen::Body* excessBody = nullptr;
+    if (envelopeBodyA && contourB1) {
+        if (applyBooleanFeature(part, envelopeBodyA, contourB1,
+                                NXOpen::Features::Feature::BooleanTypeSubtract, false)) {
+            excessBody = envelopeBodyA;
+        }
+    }
+
+    // 6) B2 - partBody (retain tool) → B2 becomes the intermediate body for core extraction.
+    NXOpen::Body* intermediateBody = nullptr;
+    if (contourB2 && partBody) {
+        if (applyBooleanFeature(part, contourB2, partBody,
                                 NXOpen::Features::Feature::BooleanTypeSubtract, true)) {
-            intermediateBody = envelopeBodyA;
+            intermediateBody = contourB2;
         }
     }
 
-    // 6) Build B from maxContour.boundary, trim intermediate, extract excess.
+    std::vector<NXOpen::Body*> allCores;
     if (intermediateBody) {
-        contourBodyB = createExactContourExtrusion(maxContour.boundary, pullDir, minZ, maxZ);
-        excessBody = cloneBody(intermediateBody);
-
-        if (contourBodyB) {
-            applyBooleanFeature(part, intermediateBody, contourBodyB,
-                                NXOpen::Features::Feature::BooleanTypeIntersect, true);
-        }
-        if (excessBody && intermediateBody) {
-            applyBooleanFeature(part, excessBody, intermediateBody,
-                                NXOpen::Features::Feature::BooleanTypeSubtract, false);
-        }
-
-        // 7) Extract internal cores + external cores.
+        // 7) Extract internal cores from intermediate body.
         std::vector<NXOpen::Body*> internalCores = extractInternalVolumes(intermediateBody);
-        NXOpen::Body* externalVolume = intermediateBody;
+
+        // 8) Subtract internal cores from intermediate body to isolate external volume.
         for (NXOpen::Body* coreBody : internalCores) {
-            if (!coreBody || !externalVolume) {
+            if (!coreBody) {
                 continue;
             }
-            applyBooleanFeature(part, externalVolume, coreBody,
+            applyBooleanFeature(part, intermediateBody, coreBody,
                                 NXOpen::Features::Feature::BooleanTypeSubtract, false);
         }
-        std::vector<NXOpen::Body*> externalCores = splitIntoConnectedBodies(externalVolume);
+
+        // Separate remaining external volume into connected bodies (external cores).
+        std::vector<NXOpen::Body*> externalCores = splitIntoConnectedBodies(intermediateBody);
         allCores.insert(allCores.end(), internalCores.begin(), internalCores.end());
         allCores.insert(allCores.end(), externalCores.begin(), externalCores.end());
+    }
 
-        // 8) Split excessBody by parting surface and unite back into upper/lower mold.
+    // 9) Apply color and layer to all cores.
+    for (NXOpen::Body* coreBody : allCores) {
+        if (!coreBody) {
+            continue;
+        }
+        UF_OBJ_set_color(coreBody->Tag(), casting::kCoreColor);
+        UF_OBJ_set_layer(coreBody->Tag(), casting::kSandCoreBaseLayer);
+    }
+
+    // 10) Split excess body by parting surface and unite each half back into upper/lower mold.
+    if (excessBody) {
         auto excessSplit = splitBodyByPartingSurface(excessBody, partingOrigin, pullDir);
         if (excessSplit.first) {
             applyBooleanFeature(part, upperBody, excessSplit.first,
@@ -802,42 +811,42 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
             applyBooleanFeature(part, lowerBody, excessSplit.second,
                                 NXOpen::Features::Feature::BooleanTypeUnite, false);
         }
-
-        // 9) Split each core by parting surface and subtract from upper/lower mold (retain core tools).
-        for (NXOpen::Body* coreBody : allCores) {
-            if (!coreBody) {
-                continue;
-            }
-            UF_OBJ_set_color(coreBody->Tag(), casting::kCoreColor);
-            UF_OBJ_set_layer(coreBody->Tag(), casting::kSandCoreBaseLayer);
-            auto splitCore = splitBodyByPartingSurface(coreBody, partingOrigin, pullDir);
-            if (splitCore.first) {
-                applyBooleanFeature(part, upperBody, splitCore.first,
-                                    NXOpen::Features::Feature::BooleanTypeSubtract, true);
-            }
-            if (splitCore.second) {
-                applyBooleanFeature(part, lowerBody, splitCore.second,
-                                    NXOpen::Features::Feature::BooleanTypeSubtract, true);
-            }
-        }
-
-        // 10) Delete temporary bodies B and the unsplit excess.
-        if (contourBodyB) {
-            UF_OBJ_delete_object(contourBodyB->Tag());
-        }
-        if (excessBody) {
-            UF_OBJ_delete_object(excessBody->Tag());
-        }
     }
-#endif
 
-    // Baseline logic: final mold blank subtraction by part body (do not retain tool).
+    // 11) Split each core by parting surface, subtract from corresponding mold (retain core tools),
+    //     then delete the original unsplit core body.
+    for (NXOpen::Body* coreBody : allCores) {
+        if (!coreBody) {
+            continue;
+        }
+        auto splitCore = splitBodyByPartingSurface(coreBody, partingOrigin, pullDir);
+        if (splitCore.first) {
+            applyBooleanFeature(part, upperBody, splitCore.first,
+                                NXOpen::Features::Feature::BooleanTypeSubtract, true);
+        }
+        if (splitCore.second) {
+            applyBooleanFeature(part, lowerBody, splitCore.second,
+                                NXOpen::Features::Feature::BooleanTypeSubtract, true);
+        }
+        UF_OBJ_delete_object(coreBody->Tag());
+    }
+
+    // 12) Final: subtract part body from upper and lower mold blanks (do not retain tool).
     if (partBody) {
         applyBooleanFeature(part, upperBody, partBody,
                             NXOpen::Features::Feature::BooleanTypeSubtract, false);
         applyBooleanFeature(part, lowerBody, partBody,
                             NXOpen::Features::Feature::BooleanTypeSubtract, false);
     }
+#else
+    // Baseline logic: subtract part body from mold blanks directly (do not retain tool).
+    if (partBody) {
+        applyBooleanFeature(part, upperBody, partBody,
+                            NXOpen::Features::Feature::BooleanTypeSubtract, false);
+        applyBooleanFeature(part, lowerBody, partBody,
+                            NXOpen::Features::Feature::BooleanTypeSubtract, false);
+    }
+#endif
 }
 
 void MyClass::showSandCoreRecursive(const casting::SandCore& sandCore) {
