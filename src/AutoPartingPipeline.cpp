@@ -2387,10 +2387,20 @@ namespace casting {
         result.cores.clear();
         result.sandCores.clear();
 
-        result.separability.obstacles.clear();
-        result.separability.score = std::clamp(1.0 - result.demold.undercutRatio, 0.0, 1.0);
-        result.separability.separable =
-            result.demold.undercutRatio <= settings.separabilityUndercutThreshold;
+        {
+            std::vector<CoreRegion> detectedRegions = detectCoreRegions(
+                result.cleanedMesh, result.demold.direction, settings.draftAngleDegrees);
+            std::vector<CoreRegion> classifiedRegions = classifyCoreRegions(
+                result.cleanedMesh, detectedRegions, result.demold.direction, settings);
+            Bounds meshBounds = computeBounds(result.cleanedMesh);
+            std::vector<std::size_t> keptIds;
+            std::vector<CoreRegion> filteredRegions = filterCoreRegions(
+                classifiedRegions, meshBounds, settings, &keptIds);
+            result.separability = evaluateSeparability(
+                result.cleanedMesh, result.demold, filteredRegions, settings, &result.cores);
+            result.sandCores = generateSandCores(
+                result.cleanedMesh, result.demold.direction, result.cores, settings);
+        }
 
         std::vector<InterferenceIssue> secondaryPartingIssues =
             checkPartingSurfaceQuality(result.partingSurface, result.demold.direction);
