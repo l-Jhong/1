@@ -364,6 +364,7 @@ namespace casting {
 
 
         bool hasDirectionalOcclusion(const Mesh&, const Vector3&, const Vector3&) {
+            // TODO: not yet implemented
             return false;
         }
 
@@ -398,6 +399,7 @@ namespace casting {
 
         bool isProjectedConcavityCandidate(const Vector3&, const ProjectionContourData&,
             double* gapToHull = nullptr) {
+            // TODO: not yet implemented
             if (gapToHull) {
                 *gapToHull = 0.0;
             }
@@ -422,17 +424,6 @@ namespace casting {
                 bounds.max.z = std::max(bounds.max.z, local.z);
             }
             return bounds;
-        }
-
-        Bounds expandLocalBounds(const Bounds& bounds, double padding) {
-            Bounds expanded = bounds;
-            expanded.min.x -= padding;
-            expanded.min.y -= padding;
-            expanded.min.z -= padding;
-            expanded.max.x += padding;
-            expanded.max.y += padding;
-            expanded.max.z += padding;
-            return expanded;
         }
 
         Bounds localBoundsToWorld(const Bounds& local, const PlaneBasis& basis) {
@@ -1454,6 +1445,8 @@ namespace casting {
 
 
         std::vector<CoreRegion> detectCoreRegions(const Mesh&, const Vector3&, double) {
+            // TODO: not yet implemented — should find undercut/cavity triangles, group them into
+            // connected regions, and return one CoreRegion per cluster.
             return {};
         }
 
@@ -1478,6 +1471,7 @@ namespace casting {
 
 
         double smallHoleThresholdByBatch(ProductionBatch) {
+            // TODO: not yet implemented — return per-batch diameter threshold (mm)
             return 0.0;
         }
 
@@ -1493,6 +1487,7 @@ namespace casting {
             double,
             double,
             ProductionBatch) {
+            // TODO: not yet implemented — evaluate whether feature should be cast or machined
             return {};
         }
 
@@ -1549,19 +1544,27 @@ namespace casting {
         }
 
 
-        std::vector<CoreRegion> filterCoreRegions(const std::vector<CoreRegion>&,
-            const Bounds&,
-            const AutoPartingSettings&,
+        std::vector<CoreRegion> filterCoreRegions(const std::vector<CoreRegion>& regions,
+            const Bounds& /* meshBounds — reserved for size-ratio filtering */,
+            const AutoPartingSettings& /* settings — reserved for minCoreVolumeRatio / maxCoreCount filtering */,
             std::vector<std::size_t>* keptIds) {
             if (keptIds) {
                 keptIds->clear();
             }
-            return {};
+            std::vector<CoreRegion> kept;
+            for (const auto& region : regions) {
+                if (region.generateCore) {
+                    if (keptIds) {
+                        keptIds->push_back(region.id);
+                    }
+                    kept.push_back(region);
+                }
+            }
+            return kept;
         }
 
         DemoldEvaluation evaluateRegionDirection(const Mesh& mesh, const std::vector<std::size_t>& indices,
             const Vector3& direction, double draftAngleDegrees);
-        Bounds expandBounds(const Bounds& bounds, double clearance);
 
         Vector3 boundsSize(const Bounds& bounds) {
             return {
@@ -2032,17 +2035,6 @@ namespace casting {
             return std::acos(cosine) * 180.0 / kPi;
         }
 
-        Bounds expandBounds(const Bounds& bounds, double clearance) {
-            Bounds expanded = bounds;
-            expanded.min.x -= clearance;
-            expanded.min.y -= clearance;
-            expanded.min.z -= clearance;
-            expanded.max.x += clearance;
-            expanded.max.y += clearance;
-            expanded.max.z += clearance;
-            return expanded;
-        }
-
         Bounds computeBoundsFromTriangles(const Mesh& mesh) {
             Bounds bounds{};
             if (mesh.triangles.empty()) {
@@ -2221,7 +2213,7 @@ namespace casting {
                 splitContainmentTolerance = std::max(kSplitPlaneContainmentTolerance,
                     partThickness * kSplitPlaneMinThicknessRatio);
             }
-            Bounds blankLocalBounds = expandLocalBounds(partLocalBounds, settings.moldBlankPadding);
+            Bounds blankLocalBounds = expandBounds(partLocalBounds, settings.moldBlankPadding);
 
             // 2) Scale the product model by shrinkage for cavity subtraction.
             // Castings shrink during cooling, so cavity must be larger (scale factor = 1 + shrinkageFactor)

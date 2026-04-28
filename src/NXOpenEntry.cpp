@@ -65,30 +65,6 @@ NXOpen::Part* resolveWorkPart(BasePart* workPart) {
     return session->Parts()->Work();
 }
 
-casting::Mesh buildDemoMesh(double size) {
-    double h = size / 2.0;
-    casting::Mesh mesh;
-    mesh.vertices = {
-        {-h, -h, -h},
-        {h, -h, -h},
-        {h, h, -h},
-        {-h, h, -h},
-        {-h, -h, h},
-        {h, -h, h},
-        {h, h, h},
-        {-h, h, h}
-    };
-    mesh.triangles = {
-        {0, 1, 2}, {0, 2, 3},
-        {4, 6, 5}, {4, 7, 6},
-        {0, 4, 5}, {0, 5, 1},
-        {1, 5, 6}, {1, 6, 2},
-        {2, 6, 7}, {2, 7, 3},
-        {3, 7, 4}, {3, 4, 0}
-    };
-    return mesh;
-}
-
 bool appendBoundingBoxMesh(tag_t bodyTag, casting::Mesh* mesh) {
     if (!mesh) {
         return false;
@@ -185,7 +161,7 @@ casting::Mesh buildMeshFromWorkPart(BasePart* workPart,
 
     // If no mesh can still be built, fall back to a demo mesh.
     if (mesh.triangles.empty()) {
-        mesh = buildDemoMesh(10.0);
+        mesh = casting::buildBoxMesh(10.0);
     }
     return mesh;
 }
@@ -247,16 +223,10 @@ bool isBoundsOverlapping(const casting::Bounds& left, const casting::Bounds& rig
 NXOpen::Body* createExtractionEnvelope(const casting::Bounds& bounds,
                                        const casting::Vector3& pullDir,
                                        double padding) {
-    casting::Bounds expanded = bounds;
-    expanded.min.x -= padding;
-    expanded.min.y -= padding;
-    expanded.min.z -= padding;
-    expanded.max.x += padding;
-    expanded.max.y += padding;
-    expanded.max.z += padding;
     // TODO: Build a strict envelope from maxContour projection with side walls parallel to pullDir.
     (void)pullDir;
-    return createExtrudedRectangularSolid(expanded, casting::kCoreColor, casting::kSandCoreBaseLayer);
+    return createExtrudedRectangularSolid(casting::expandBounds(bounds, padding),
+                                          casting::kCoreColor, casting::kSandCoreBaseLayer);
 }
 
 void computeZRangeAlongDirection(const casting::Mesh& mesh,
@@ -310,20 +280,8 @@ NXOpen::Body* cloneBody(NXOpen::Body* original) {
         return nullptr;
     }
 
-    NXOpen::Features::BooleanBuilder* builder = nullptr;
-    try {
-        builder = part->Features()->CreateBooleanBuilder(nullptr);
-        builder->SetOperation(NXOpen::Features::Feature::BooleanTypeIntersect);
-        builder->SetTarget(boxBody);
-        builder->SetTool(original);
-        builder->SetRetainTarget(false);
-        builder->SetRetainTool(true);
-        builder->CommitFeature();
-        builder->Destroy();
-    } catch (...) {
-        if (builder) {
-            builder->Destroy();
-        }
+    if (!applyBooleanFeature(part, boxBody, original,
+                             NXOpen::Features::Feature::BooleanTypeIntersect, true)) {
         return nullptr;
     }
 
@@ -423,6 +381,7 @@ NXOpen::Body* createExactContourExtrusion(const std::vector<casting::Vector3>& b
 }
 
 std::vector<NXOpen::Body*> extractInternalVolumes(NXOpen::Body* body) {
+    // TODO: not yet implemented — detect and extract enclosed void regions from body
     (void)body;
     return {};
 }
@@ -451,6 +410,7 @@ std::vector<NXOpen::Body*> extractInternalCoresManually(NXOpen::Part* part, NXOp
 }
 
 std::vector<NXOpen::Body*> splitIntoConnectedBodies(NXOpen::Body* body) {
+    // TODO: not yet implemented — split multi-lump body into individual connected bodies
     (void)body;
     return {};
 }
@@ -762,23 +722,10 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
     // 3) Compute mesh vertex bounding box and build envelope A (expanded 20 mm in XY).
     NXOpen::Body* envelopeBodyA = nullptr;
     if (!mesh.vertices.empty()) {
-        casting::Bounds meshBounds{};
-        meshBounds.min = mesh.vertices[0];
-        meshBounds.max = mesh.vertices[0];
-        for (const auto& v : mesh.vertices) {
-            meshBounds.min.x = std::min(meshBounds.min.x, v.x);
-            meshBounds.min.y = std::min(meshBounds.min.y, v.y);
-            meshBounds.min.z = std::min(meshBounds.min.z, v.z);
-            meshBounds.max.x = std::max(meshBounds.max.x, v.x);
-            meshBounds.max.y = std::max(meshBounds.max.y, v.y);
-            meshBounds.max.z = std::max(meshBounds.max.z, v.z);
-        }
         constexpr double kEnvelopePadding = 20.0;
-        casting::Bounds envelopeBounds = meshBounds;
-        envelopeBounds.min.x -= kEnvelopePadding;
-        envelopeBounds.min.y -= kEnvelopePadding;
-        envelopeBounds.max.x += kEnvelopePadding;
-        envelopeBounds.max.y += kEnvelopePadding;
+        casting::Bounds meshBounds = casting::computeBounds(mesh);
+        casting::Bounds envelopeBounds = casting::expandBounds(meshBounds, kEnvelopePadding);
+        // Tighten Z to align with the pull-direction projection range.
         envelopeBounds.min.z = minZ - 0.5;
         envelopeBounds.max.z = maxZ + 0.5;
         envelopeBodyA = createExtrudedRectangularSolid(envelopeBounds, 0, casting::kSandCoreBaseLayer);
@@ -939,38 +886,40 @@ void MyClass::do_it() {
 
     casting::AutoPartingResult result = pipeline.run(mesh);
 
-    stringstream stream;
-    stream << "Demold direction: (" << result.demold.direction.x << ", "
-           << result.demold.direction.y << ", " << result.demold.direction.z << ")";
-    print(stream.str());
-
-    stream.str("");
-    stream.clear();
-    stream << "Visibility ratio: " << result.demold.visibilityRatio
-           << " | Undercut ratio: " << result.demold.undercutRatio;
-    print(stream.str());
-
-    stream.str("");
-    stream.clear();
-    stream << "Parting line points: " << result.partingLine.points.size()
-           << " | Core regions: " << result.cores.size()
-           << " | Sand cores: " << result.sandCores.size();
-    print(stream.str());
-
-    stream.str("");
-    stream.clear();
-    stream << "Separability: " << (result.separability.separable ? "separable" : "not separable")
-           << " | Obstacles: " << result.separability.obstacles.size()
-           << " | Max contour area: " << result.maxContour.area;
-    print(stream.str());
-
-    stream.str("");
-    stream.clear();
-    stream << "Contour source: " << (result.maxContour.selectedFromSlice ? "slice" : "fallback")
-           << " | Slice index: " << result.maxContour.selectedSliceIndex
-           << " | Local W: " << result.maxContour.selectedSliceW
-           << " | Used fallback: " << (result.maxContour.fallbackUsed ? "yes" : "no");
-    print(stream.str());
+    {
+        stringstream s;
+        s << "Demold direction: (" << result.demold.direction.x << ", "
+          << result.demold.direction.y << ", " << result.demold.direction.z << ")";
+        print(s.str());
+    }
+    {
+        stringstream s;
+        s << "Visibility ratio: " << result.demold.visibilityRatio
+          << " | Undercut ratio: " << result.demold.undercutRatio;
+        print(s.str());
+    }
+    {
+        stringstream s;
+        s << "Parting line points: " << result.partingLine.points.size()
+          << " | Core regions: " << result.cores.size()
+          << " | Sand cores: " << result.sandCores.size();
+        print(s.str());
+    }
+    {
+        stringstream s;
+        s << "Separability: " << (result.separability.separable ? "separable" : "not separable")
+          << " | Obstacles: " << result.separability.obstacles.size()
+          << " | Max contour area: " << result.maxContour.area;
+        print(s.str());
+    }
+    {
+        stringstream s;
+        s << "Contour source: " << (result.maxContour.selectedFromSlice ? "slice" : "fallback")
+          << " | Slice index: " << result.maxContour.selectedSliceIndex
+          << " | Local W: " << result.maxContour.selectedSliceW
+          << " | Used fallback: " << (result.maxContour.fallbackUsed ? "yes" : "no");
+        print(s.str());
+    }
 
     highlightPartingSurface(result.partingSurface.boundary);
     showMoldAssembly(result.moldAssembly, result.maxContour, mesh);

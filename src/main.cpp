@@ -2,37 +2,9 @@
 
 #include <iostream>
 
-namespace {
-
-casting::Mesh buildBoxMesh(double size) {
-    double h = size / 2.0;
-    casting::Mesh mesh;
-    mesh.vertices = {
-        {-h, -h, -h},
-        {h, -h, -h},
-        {h, h, -h},
-        {-h, h, -h},
-        {-h, -h, h},
-        {h, -h, h},
-        {h, h, h},
-        {-h, h, h}
-    };
-    mesh.triangles = {
-        {0, 1, 2}, {0, 2, 3},
-        {4, 6, 5}, {4, 7, 6},
-        {0, 4, 5}, {0, 5, 1},
-        {1, 5, 6}, {1, 6, 2},
-        {2, 6, 7}, {2, 7, 3},
-        {3, 7, 4}, {3, 4, 0}
-    };
-    return mesh;
-}
-
-}  // namespace
-
 int main() {
     casting::AutoPartingPipeline pipeline;
-    casting::Mesh mesh = buildBoxMesh(10.0);
+    casting::Mesh mesh = casting::buildBoxMesh(10.0);
     casting::AutoPartingResult result = pipeline.run(mesh);
 
     // ---- 零件 (Part / Casting) ----

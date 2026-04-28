@@ -191,4 +191,39 @@ std::vector<Vector2> computeConvexHull2D(const std::vector<Vector2>& points) {
     return hull;
 }
 
+Bounds expandBounds(const Bounds& bounds, double padding) {
+    Bounds expanded = bounds;
+    expanded.min.x -= padding;
+    expanded.min.y -= padding;
+    expanded.min.z -= padding;
+    expanded.max.x += padding;
+    expanded.max.y += padding;
+    expanded.max.z += padding;
+    return expanded;
+}
+
+Mesh buildBoxMesh(double size) {
+    double h = size / 2.0;
+    Mesh mesh;
+    mesh.vertices = {
+        {-h, -h, -h},
+        { h, -h, -h},
+        { h,  h, -h},
+        {-h,  h, -h},
+        {-h, -h,  h},
+        { h, -h,  h},
+        { h,  h,  h},
+        {-h,  h,  h}
+    };
+    mesh.triangles = {
+        {0, 1, 2}, {0, 2, 3},
+        {4, 6, 5}, {4, 7, 6},
+        {0, 4, 5}, {0, 5, 1},
+        {1, 5, 6}, {1, 6, 2},
+        {2, 6, 7}, {2, 7, 3},
+        {3, 7, 4}, {3, 4, 0}
+    };
+    return mesh;
+}
+
 }  // namespace casting

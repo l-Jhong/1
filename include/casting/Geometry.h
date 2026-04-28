@@ -55,7 +55,9 @@ Vector3 triangleNormal(const Mesh& mesh, const Triangle& triangle);
 Vector3 triangleCentroid(const Mesh& mesh, const Triangle& triangle);
 double triangleArea(const Mesh& mesh, const Triangle& triangle);
 Bounds computeBounds(const Mesh& mesh);
+Bounds expandBounds(const Bounds& bounds, double padding);
 Vector3 computeCentroid(const Mesh& mesh);
 std::vector<Vector2> computeConvexHull2D(const std::vector<Vector2>& points);
+Mesh buildBoxMesh(double size);
 
 }  // namespace casting
