@@ -387,8 +387,47 @@ NXOpen::Body* createExactContourExtrusion(const std::vector<casting::Vector3>& b
     return dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(bodyTag));
 }
 
+casting::Mesh buildDemoMesh(double size) {
+    return casting::buildBoxMesh(size);
+}
+
+// Returns true when the mesh contains at least one face whose outward normal makes an
+// angle greater than (90 + angleThresholdDeg) degrees with the pull direction.
+// Such a face is "back-facing" beyond the threshold and indicates an external undercut.
+bool hasExternalUndercut(const casting::Mesh& mesh,
+                         const casting::Vector3& pullDir,
+                         double angleThresholdDeg) {
+    if (mesh.triangles.empty()) {
+        return false;
+    }
+
+    constexpr double kPi = 3.14159265358979323846;
+
+    // Normalize pull direction.
+    double mag = casting::length(pullDir);
+    casting::Vector3 pullNorm = (mag > 1e-9) ? casting::normalized(pullDir)
+                                             : casting::Vector3{0.0, 0.0, 1.0};
+
+    for (const auto& tri : mesh.triangles) {
+        casting::Vector3 n = casting::triangleNormal(mesh, tri);
+        double nLen = casting::length(n);
+        if (nLen < 1e-12) {
+            continue;
+        }
+        n = n / nLen;
+        double dotVal = casting::dot(n, pullNorm);
+        // Clamp to [-1, 1] to avoid NaN from acos.
+        dotVal = std::max(-1.0, std::min(1.0, dotVal));
+        double angleDeg = std::acos(dotVal) * 180.0 / kPi;
+        if (angleDeg > 90.0 + angleThresholdDeg) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::vector<NXOpen::Body*> extractInternalVolumes(NXOpen::Body* body) {
-    // TODO: not yet implemented — detect and extract enclosed void regions from body
+    // Stub: internal void detection is not yet implemented.
     (void)body;
     return {};
 }
@@ -747,7 +786,7 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
     }
 
 #ifdef DEBUG_ENVELOPE_SUBTRACTION
-    // 1) Pull direction and parting-plane origin from maxContour.
+    // 1) Pull direction and parting-plane origin.
     casting::Vector3 pullDir{0.0, 0.0, 1.0};
     casting::Vector3 partingOrigin = maxContour.centroid;
     if (!assembly.blocks.empty()) {
@@ -757,28 +796,27 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
         pullDir = {0.0, 0.0, 1.0};
     }
 
-    // 2) Compute part Z range along pull direction from mesh vertices.
+    // 2) Compute Z range along pull direction.
     double minZ = 0.0;
     double maxZ = 0.0;
     computeZRangeAlongDirection(mesh, pullDir, minZ, maxZ);
 
-    // 3) Compute mesh vertex bounding box and build envelope A (expanded 20 mm in XY).
+    // 3) Build initial envelope A from mesh bounding box (XY +20 mm, Z from projection range).
     NXOpen::Body* envelopeBodyA = nullptr;
     if (!mesh.vertices.empty()) {
         constexpr double kEnvelopePadding = 20.0;
         casting::Bounds meshBounds = casting::computeBounds(mesh);
         casting::Bounds envelopeBounds = casting::expandBounds(meshBounds, kEnvelopePadding);
-        // Tighten Z to align with the pull-direction projection range.
         envelopeBounds.min.z = minZ - 0.5;
         envelopeBounds.max.z = maxZ + 0.5;
         envelopeBodyA = createExtrudedRectangularSolid(envelopeBounds, 0, casting::kSandCoreBaseLayer);
     }
 
-    // 4) Create two identical precise contour extrusions B1 and B2 from maxContour.boundary.
+    // 4) Create two identical precise contour extrusions B1 and B2.
     NXOpen::Body* contourB1 = createExactContourExtrusion(maxContour.boundary, pullDir, minZ, maxZ);
     NXOpen::Body* contourB2 = createExactContourExtrusion(maxContour.boundary, pullDir, minZ, maxZ);
 
-    // 5) A - B1 (not retain tool) → excessBody.
+    // 5) A - B1 (not retain tool) → excessBody; B1 is consumed.
     NXOpen::Body* excessBody = nullptr;
     if (envelopeBodyA && contourB1) {
         excessBody = applyBooleanFeature(part, envelopeBodyA, contourB1,
@@ -792,31 +830,29 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
                                                NXOpen::Features::Feature::BooleanTypeSubtract, true);
     }
 
-    // 7) Manually select and sew faces to extract internal and external cores.
-    std::vector<NXOpen::Body*> allCores;
-    if (intermediateBody) {
-        NXOpen::UI* ui = NXOpen::UI::GetUI();
-        if (ui && ui->NXMessageBox()) {
-            ui->NXMessageBox()->Show("砂芯提取",
-                NXOpen::NXMessageBox::DialogTypeInformation,
-                "请在视图中选择内部砂芯的内表面，选完后取消以继续。");
+    // 7) Undercut detection.
+    bool undercutDetected = hasExternalUndercut(mesh, pullDir);
+
+    // 8) Extract internal cores (stub, returns empty list).
+    std::vector<NXOpen::Body*> internalCores = extractInternalVolumes(intermediateBody);
+
+    // 9) Conditionally extract external cores when undercut is present.
+    std::vector<NXOpen::Body*> externalCores;
+    if (undercutDetected && intermediateBody) {
+        // Subtract internal cores from intermediate body before splitting into external cores.
+        for (NXOpen::Body* ic : internalCores) {
+            if (ic && intermediateBody) {
+                intermediateBody = applyBooleanFeature(part, intermediateBody, ic,
+                                                       NXOpen::Features::Feature::BooleanTypeSubtract, false);
+            }
         }
-        NXOpen::Body* internalCore = manuallySelectAndSewFaces("选择内部砂芯的内表面");
-        if (internalCore) {
-            allCores.push_back(internalCore);
-        }
-        if (ui && ui->NXMessageBox()) {
-            ui->NXMessageBox()->Show("砂芯提取",
-                NXOpen::NXMessageBox::DialogTypeInformation,
-                "请在视图中选择外部砂芯的外表面，选完后取消以继续。");
-        }
-        NXOpen::Body* externalCore = manuallySelectAndSewFaces("选择外部砂芯的外表面");
-        if (externalCore) {
-            allCores.push_back(externalCore);
-        }
+        externalCores = splitIntoConnectedBodies(intermediateBody);
     }
 
-    // 8) Apply color and layer to all cores.
+    // 10) Merge all cores; set color and layer.
+    std::vector<NXOpen::Body*> allCores;
+    allCores.insert(allCores.end(), internalCores.begin(), internalCores.end());
+    allCores.insert(allCores.end(), externalCores.begin(), externalCores.end());
     for (NXOpen::Body* coreBody : allCores) {
         if (!coreBody) {
             continue;
@@ -825,7 +861,7 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
         UF_OBJ_set_layer(coreBody->Tag(), casting::kSandCoreBaseLayer);
     }
 
-    // 9) Split excess body by parting surface; unite each half into the corresponding mold blank.
+    // 11) Split excess body and unite each half with the corresponding mold blank.
     if (excessBody) {
         auto excessSplit = splitBodyByPartingSurface(excessBody, partingOrigin, pullDir);
         if (excessSplit.first && upperBody) {
@@ -838,8 +874,8 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
         }
     }
 
-    // 10) Split each core by parting surface; subtract each half from the corresponding mold blank
-    //     (retain core tools), then delete the original unsplit core body.
+    // 12) Split each core by parting surface; subtract each half from the corresponding mold
+    //     (retain tool), then delete the original core body.
     for (NXOpen::Body* coreBody : allCores) {
         if (!coreBody) {
             continue;
@@ -856,7 +892,7 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
         UF_OBJ_delete_object(coreBody->Tag());
     }
 
-    // 11) Final: subtract part body from upper and lower mold blanks (do not retain tool).
+    // 13) Final: subtract part body from both mold blanks (do not retain tool).
     if (partBody) {
         if (upperBody) {
             upperBody = applyBooleanFeature(part, upperBody, partBody,
@@ -868,7 +904,7 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
         }
     }
 
-    // 12) Clean up intermediate body.
+    // 14) Clean up intermediate body.
     if (intermediateBody) {
         UF_OBJ_delete_object(intermediateBody->Tag());
     }
