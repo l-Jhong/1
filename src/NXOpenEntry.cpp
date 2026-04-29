@@ -6,6 +6,7 @@
 #include <uf_object_types.h>
 #include <uf_modl.h>
 #include <uf_obj.h>
+#include <uf_ui.h>
 
 // Internal Includes
 #include <NXOpen/ListingWindow.hxx>
@@ -166,13 +167,13 @@ casting::Mesh buildMeshFromWorkPart(BasePart* workPart,
     return mesh;
 }
 
-bool applyBooleanFeature(NXOpen::Part* part,
-                         NXOpen::Body* targetBody,
-                         NXOpen::Body* toolBody,
-                         NXOpen::Features::Feature::BooleanType operation,
-                         bool retainTool = true) {
+NXOpen::Body* applyBooleanFeature(NXOpen::Part* part,
+                                   NXOpen::Body* targetBody,
+                                   NXOpen::Body* toolBody,
+                                   NXOpen::Features::Feature::BooleanType operation,
+                                   bool retainTool = true) {
     if (!part || !targetBody || !toolBody) {
-        return false;
+        return nullptr;
     }
 
     NXOpen::Features::BooleanBuilder* booleanBuilder = nullptr;
@@ -183,14 +184,23 @@ bool applyBooleanFeature(NXOpen::Part* part,
         booleanBuilder->SetTool(toolBody);
         booleanBuilder->SetRetainTarget(false);
         booleanBuilder->SetRetainTool(retainTool);
-        booleanBuilder->CommitFeature();
+        NXOpen::NXObject* committed = booleanBuilder->CommitFeature();
         booleanBuilder->Destroy();
-        return true;
+        booleanBuilder = nullptr;
+        if (!committed) {
+            return nullptr;
+        }
+        tag_t featTag = committed->Tag();
+        tag_t bodyTag = NULL_TAG;
+        if (UF_MODL_ask_feat_body(featTag, &bodyTag) != 0 || bodyTag == NULL_TAG) {
+            return nullptr;
+        }
+        return dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(bodyTag));
     } catch (...) {
         if (booleanBuilder) {
             booleanBuilder->Destroy();
         }
-        return false;
+        return nullptr;
     }
 }
 
@@ -280,12 +290,9 @@ NXOpen::Body* cloneBody(NXOpen::Body* original) {
         return nullptr;
     }
 
-    if (!applyBooleanFeature(part, boxBody, original,
-                             NXOpen::Features::Feature::BooleanTypeIntersect, true)) {
-        return nullptr;
-    }
-
-    return boxBody;
+    NXOpen::Body* cloned = applyBooleanFeature(part, boxBody, original,
+                                               NXOpen::Features::Feature::BooleanTypeIntersect, true);
+    return cloned;
 }
 
 NXOpen::Body* createExactContourExtrusion(const std::vector<casting::Vector3>& boundary,
@@ -386,27 +393,65 @@ std::vector<NXOpen::Body*> extractInternalVolumes(NXOpen::Body* body) {
     return {};
 }
 
-std::vector<NXOpen::Body*> extractInternalCoresManually(NXOpen::Part* part, NXOpen::Body* intermediateBody) {
-    std::vector<NXOpen::Body*> internalCores;
-    if (!part || !intermediateBody) {
-        return internalCores;
+// Filter callback for UF_UI_select_with_class_dialog: accept solid faces only.
+static int selectFaceFilter(tag_t object, int* type, void* /*clientData*/) {
+    int objType = 0;
+    int objSubtype = 0;
+    UF_OBJ_ask_type_and_subtype(object, &objType, &objSubtype);
+    *type = (objType == UF_solid_type && objSubtype == UF_solid_face_subtype)
+                ? UF_UI_SEL_ACCEPT
+                : UF_UI_SEL_REJECT;
+    return 0;
+}
+
+// Prompts the user to select solid faces interactively, then sews them into a solid body.
+// Returns the resulting solid body, or nullptr if selection was cancelled or sewing failed.
+NXOpen::Body* manuallySelectAndSewFaces(const char* prompt) {
+    uf_list_p_t faceList = nullptr;
+    if (UF_MODL_create_list(&faceList) != 0 || !faceList) {
+        return nullptr;
     }
 
-    // Prompt user to manually select all inner faces of a closed cavity.
-    NXOpen::UI* ui = NXOpen::UI::GetUI();
-    if (ui && ui->NXMessageBox()) {
-        ui->NXMessageBox()->Show(
-            "Internal Core Extraction",
-            NXOpen::NXMessageBox::DialogTypeInformation,
-            "Scaffold only: integrate face-picking dialog and sewing-to-solid workflow.");
+    int numFaces = 0;
+    while (true) {
+        int response = 0;
+        tag_t objTag = NULL_TAG;
+        int rc = UF_UI_select_with_class_dialog(
+            const_cast<char*>(prompt),
+            const_cast<char*>("Select Face"),
+            UF_UI_SEL_SCOPE_WORK_PART,
+            selectFaceFilter,
+            nullptr,
+            &response,
+            &objTag);
+        if (rc != 0 || response == UF_UI_CANCEL || objTag == NULL_TAG) {
+            break;
+        }
+        UF_MODL_put_list_item(faceList, objTag);
+        ++numFaces;
     }
 
-    // TODO: Use SelectionManager / UF_UI_select_with_class_dialog to pick faces into faceTags.
-    // TODO: Sew/extract faceTags into sheets, then close/thicken into solid bodies.
-    // TODO: Append generated internal core bodies to internalCores.
-    (void)part;
-    (void)intermediateBody;
-    return internalCores;
+    if (numFaces == 0) {
+        UF_MODL_delete_list(&faceList);
+        return nullptr;
+    }
+
+    constexpr double kSewTolerance = 0.01;
+    uf_list_p_t sewnList = nullptr;
+    int rc = UF_MODL_create_sew(faceList, kSewTolerance, &sewnList);
+    UF_MODL_delete_list(&faceList);
+    if (rc != 0 || !sewnList) {
+        return nullptr;
+    }
+
+    tag_t sewnTag = NULL_TAG;
+    UF_MODL_ask_list_item(sewnList, 0, &sewnTag);
+    UF_MODL_delete_list(&sewnList);
+
+    if (sewnTag == NULL_TAG) {
+        return nullptr;
+    }
+    return dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(sewnTag));
 }
 
 std::vector<NXOpen::Body*> splitIntoConnectedBodies(NXOpen::Body* body) {
@@ -735,45 +780,45 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
     NXOpen::Body* contourB1 = createExactContourExtrusion(maxContour.boundary, pullDir, minZ, maxZ);
     NXOpen::Body* contourB2 = createExactContourExtrusion(maxContour.boundary, pullDir, minZ, maxZ);
 
-    // 5) A - B1 (not retain tool) → A becomes the excess part (returned to mold).
+    // 5) A - B1 (not retain tool) → excessBody.
     NXOpen::Body* excessBody = nullptr;
     if (envelopeBodyA && contourB1) {
-        if (applyBooleanFeature(part, envelopeBodyA, contourB1,
-                                NXOpen::Features::Feature::BooleanTypeSubtract, false)) {
-            excessBody = envelopeBodyA;
-        }
+        excessBody = applyBooleanFeature(part, envelopeBodyA, contourB1,
+                                         NXOpen::Features::Feature::BooleanTypeSubtract, false);
     }
 
-    // 6) B2 - partBody (retain tool) → B2 becomes the intermediate body for core extraction.
+    // 6) B2 - partBody (retain tool) → intermediateBody for core extraction.
     NXOpen::Body* intermediateBody = nullptr;
     if (contourB2 && partBody) {
-        if (applyBooleanFeature(part, contourB2, partBody,
-                                NXOpen::Features::Feature::BooleanTypeSubtract, true)) {
-            intermediateBody = contourB2;
-        }
+        intermediateBody = applyBooleanFeature(part, contourB2, partBody,
+                                               NXOpen::Features::Feature::BooleanTypeSubtract, true);
     }
 
+    // 7) Manually select and sew faces to extract internal and external cores.
     std::vector<NXOpen::Body*> allCores;
     if (intermediateBody) {
-        // 7) Extract internal cores from intermediate body.
-        std::vector<NXOpen::Body*> internalCores = extractInternalVolumes(intermediateBody);
-
-        // 8) Subtract internal cores from intermediate body to isolate external volume.
-        for (NXOpen::Body* coreBody : internalCores) {
-            if (!coreBody) {
-                continue;
-            }
-            applyBooleanFeature(part, intermediateBody, coreBody,
-                                NXOpen::Features::Feature::BooleanTypeSubtract, false);
+        NXOpen::UI* ui = NXOpen::UI::GetUI();
+        if (ui && ui->NXMessageBox()) {
+            ui->NXMessageBox()->Show("砂芯提取",
+                NXOpen::NXMessageBox::DialogTypeInformation,
+                "请在视图中选择内部砂芯的内表面，选完后取消以继续。");
         }
-
-        // Separate remaining external volume into connected bodies (external cores).
-        std::vector<NXOpen::Body*> externalCores = splitIntoConnectedBodies(intermediateBody);
-        allCores.insert(allCores.end(), internalCores.begin(), internalCores.end());
-        allCores.insert(allCores.end(), externalCores.begin(), externalCores.end());
+        NXOpen::Body* internalCore = manuallySelectAndSewFaces("选择内部砂芯的内表面");
+        if (internalCore) {
+            allCores.push_back(internalCore);
+        }
+        if (ui && ui->NXMessageBox()) {
+            ui->NXMessageBox()->Show("砂芯提取",
+                NXOpen::NXMessageBox::DialogTypeInformation,
+                "请在视图中选择外部砂芯的外表面，选完后取消以继续。");
+        }
+        NXOpen::Body* externalCore = manuallySelectAndSewFaces("选择外部砂芯的外表面");
+        if (externalCore) {
+            allCores.push_back(externalCore);
+        }
     }
 
-    // 9) Apply color and layer to all cores.
+    // 8) Apply color and layer to all cores.
     for (NXOpen::Body* coreBody : allCores) {
         if (!coreBody) {
             continue;
@@ -782,51 +827,60 @@ void MyClass::showMoldAssembly(const casting::MoldAssembly& assembly,
         UF_OBJ_set_layer(coreBody->Tag(), casting::kSandCoreBaseLayer);
     }
 
-    // 10) Split excess body by parting surface and unite each half back into upper/lower mold.
+    // 9) Split excess body by parting surface; unite each half into the corresponding mold blank.
     if (excessBody) {
         auto excessSplit = splitBodyByPartingSurface(excessBody, partingOrigin, pullDir);
-        if (excessSplit.first) {
-            applyBooleanFeature(part, upperBody, excessSplit.first,
-                                NXOpen::Features::Feature::BooleanTypeUnite, false);
+        if (excessSplit.first && upperBody) {
+            upperBody = applyBooleanFeature(part, upperBody, excessSplit.first,
+                                            NXOpen::Features::Feature::BooleanTypeUnite, false);
         }
-        if (excessSplit.second) {
-            applyBooleanFeature(part, lowerBody, excessSplit.second,
-                                NXOpen::Features::Feature::BooleanTypeUnite, false);
+        if (excessSplit.second && lowerBody) {
+            lowerBody = applyBooleanFeature(part, lowerBody, excessSplit.second,
+                                            NXOpen::Features::Feature::BooleanTypeUnite, false);
         }
     }
 
-    // 11) Split each core by parting surface, subtract from corresponding mold (retain core tools),
-    //     then delete the original unsplit core body.
+    // 10) Split each core by parting surface; subtract each half from the corresponding mold blank
+    //     (retain core tools), then delete the original unsplit core body.
     for (NXOpen::Body* coreBody : allCores) {
         if (!coreBody) {
             continue;
         }
         auto splitCore = splitBodyByPartingSurface(coreBody, partingOrigin, pullDir);
-        if (splitCore.first) {
-            applyBooleanFeature(part, upperBody, splitCore.first,
-                                NXOpen::Features::Feature::BooleanTypeSubtract, true);
+        if (splitCore.first && upperBody) {
+            upperBody = applyBooleanFeature(part, upperBody, splitCore.first,
+                                            NXOpen::Features::Feature::BooleanTypeSubtract, true);
         }
-        if (splitCore.second) {
-            applyBooleanFeature(part, lowerBody, splitCore.second,
-                                NXOpen::Features::Feature::BooleanTypeSubtract, true);
+        if (splitCore.second && lowerBody) {
+            lowerBody = applyBooleanFeature(part, lowerBody, splitCore.second,
+                                            NXOpen::Features::Feature::BooleanTypeSubtract, true);
         }
         UF_OBJ_delete_object(coreBody->Tag());
     }
 
-    // 12) Final: subtract part body from upper and lower mold blanks (do not retain tool).
+    // 11) Final: subtract part body from upper and lower mold blanks (do not retain tool).
     if (partBody) {
-        applyBooleanFeature(part, upperBody, partBody,
-                            NXOpen::Features::Feature::BooleanTypeSubtract, false);
-        applyBooleanFeature(part, lowerBody, partBody,
-                            NXOpen::Features::Feature::BooleanTypeSubtract, false);
+        if (upperBody) {
+            upperBody = applyBooleanFeature(part, upperBody, partBody,
+                                            NXOpen::Features::Feature::BooleanTypeSubtract, false);
+        }
+        if (lowerBody) {
+            lowerBody = applyBooleanFeature(part, lowerBody, partBody,
+                                            NXOpen::Features::Feature::BooleanTypeSubtract, false);
+        }
+    }
+
+    // 12) Clean up intermediate body.
+    if (intermediateBody) {
+        UF_OBJ_delete_object(intermediateBody->Tag());
     }
 #else
     // Baseline logic: subtract part body from mold blanks directly (do not retain tool).
     if (partBody) {
-        applyBooleanFeature(part, upperBody, partBody,
-                            NXOpen::Features::Feature::BooleanTypeSubtract, false);
-        applyBooleanFeature(part, lowerBody, partBody,
-                            NXOpen::Features::Feature::BooleanTypeSubtract, false);
+        upperBody = applyBooleanFeature(part, upperBody, partBody,
+                                        NXOpen::Features::Feature::BooleanTypeSubtract, false);
+        lowerBody = applyBooleanFeature(part, lowerBody, partBody,
+                                        NXOpen::Features::Feature::BooleanTypeSubtract, false);
     }
 #endif
 }
