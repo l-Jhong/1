@@ -1,4 +1,5 @@
 #include "AutoPartingPipeline.h"
+#include "Geometry.h"
 
 #include <algorithm>
 #include <array>
