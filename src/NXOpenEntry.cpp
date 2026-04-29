@@ -396,7 +396,7 @@ casting::Mesh buildDemoMesh(double size) {
 // Such a face is "back-facing" beyond the threshold and indicates an external undercut.
 bool hasExternalUndercut(const casting::Mesh& mesh,
                          const casting::Vector3& pullDir,
-                         double angleThresholdDeg) {
+                         double angleThresholdDeg = 5.0) {
     if (mesh.triangles.empty()) {
         return false;
     }
@@ -453,7 +453,6 @@ NXOpen::Body* manuallySelectAndSewFaces(const char* prompt) {
         int rc = UF_UI_select_with_class_dialog(
             const_cast<char*>(prompt),
             const_cast<char*>("Select Face"),
-            UF_UI_SEL_SCOPE_WORK_PART,
             selectFaceInit,
             nullptr,
             &response,
@@ -472,12 +471,20 @@ NXOpen::Body* manuallySelectAndSewFaces(const char* prompt) {
 
     constexpr double kSewTolerance = 0.01;
 
-    // Sew the selected faces into a solid body using the uf_list_p_t API.
+    // Extract face tags from the list into an array for the array-based sew API.
+    int listCount = 0;
+    UF_MODL_ask_list_count(faceList, &listCount);
+    std::vector<tag_t> faceArr(listCount);
+    for (int i = 0; i < listCount; ++i) {
+        UF_MODL_ask_list_item(faceList, i, &faceArr[i]);
+    }
+    UF_MODL_delete_list(&faceList);
+
     tag_t sewnTag = NULL_TAG;
     int numSewErrors = 0;
     tag_t* badEdges = nullptr;
-    int rc = UF_MODL_create_sew(faceList, kSewTolerance, &sewnTag, &numSewErrors, &badEdges);
-    UF_MODL_delete_list(&faceList);
+    int rc = UF_MODL_create_sew(listCount, faceArr.data(), kSewTolerance,
+                                &sewnTag, &numSewErrors, &badEdges);
     if (badEdges) { UF_free(badEdges); }
     if (rc != 0 || sewnTag == NULL_TAG) {
         return nullptr;
