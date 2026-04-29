@@ -1,4 +1,5 @@
 #include "casting/AutoPartingPipeline.h"
+#include "casting/Geometry.h"
 
 #include <iostream>
 
