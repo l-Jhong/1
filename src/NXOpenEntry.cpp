@@ -393,15 +393,10 @@ std::vector<NXOpen::Body*> extractInternalVolumes(NXOpen::Body* body) {
     return {};
 }
 
-// Filter callback for UF_UI_select_with_class_dialog: accept solid faces only.
-static int selectFaceFilter(tag_t object, int* type, void* /*clientData*/) {
-    int objType = 0;
-    int objSubtype = 0;
-    UF_OBJ_ask_type_and_subtype(object, &objType, &objSubtype);
-    *type = (objType == UF_solid_type && objSubtype == UF_solid_face_subtype)
-                ? UF_UI_SEL_ACCEPT
-                : UF_UI_SEL_REJECT;
-    return 0;
+// Initialization callback for UF_UI_select_with_class_dialog: restrict selection to solid faces.
+static int selectFaceInit(UF_UI_selection_p_t sel, void* /*userData*/) {
+    UF_UI_mask_t mask = { UF_solid_type, UF_solid_face_subtype, 0 };
+    return UF_UI_set_sel_mask(sel, UF_UI_SEL_MASK_CLEAR_AND_ENABLE_SPECIFIC, 1, &mask);
 }
 
 // Prompts the user to select solid faces interactively, then sews them into a solid body.
@@ -419,8 +414,7 @@ NXOpen::Body* manuallySelectAndSewFaces(const char* prompt) {
         int rc = UF_UI_select_with_class_dialog(
             const_cast<char*>(prompt),
             const_cast<char*>("Select Face"),
-            UF_UI_SEL_SCOPE_WORK_PART,
-            selectFaceFilter,
+            selectFaceInit,
             nullptr,
             &response,
             &objTag);
@@ -437,18 +431,22 @@ NXOpen::Body* manuallySelectAndSewFaces(const char* prompt) {
     }
 
     constexpr double kSewTolerance = 0.01;
-    uf_list_p_t sewnList = nullptr;
-    int rc = UF_MODL_create_sew(faceList, kSewTolerance, &sewnList);
-    UF_MODL_delete_list(&faceList);
-    if (rc != 0 || !sewnList) {
-        return nullptr;
+
+    // Extract face tags from list into an array for UF_MODL_create_sew
+    int n = 0;
+    UF_MODL_ask_list_count(faceList, &n);
+    std::vector<tag_t> faceArr(static_cast<size_t>(n));
+    for (int i = 0; i < n; i++) {
+        UF_MODL_ask_list_item(faceList, i, &faceArr[static_cast<size_t>(i)]);
     }
+    UF_MODL_delete_list(&faceList);
 
     tag_t sewnTag = NULL_TAG;
-    UF_MODL_ask_list_item(sewnList, 0, &sewnTag);
-    UF_MODL_delete_list(&sewnList);
-
-    if (sewnTag == NULL_TAG) {
+    int numSewErrors = 0;
+    tag_t* badEdges = nullptr;
+    int rc = UF_MODL_create_sew(n, faceArr.data(), kSewTolerance, &sewnTag, &numSewErrors, &badEdges);
+    if (badEdges) { UF_free(badEdges); }
+    if (rc != 0 || sewnTag == NULL_TAG) {
         return nullptr;
     }
     return dynamic_cast<NXOpen::Body*>(NXOpen::NXObjectManager::Get(sewnTag));
